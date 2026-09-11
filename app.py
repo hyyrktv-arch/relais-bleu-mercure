@@ -105,7 +105,7 @@ track = c2.selectbox("Circuit", sorted(laps.loc[laps["car"] == car, "track"].dro
 sessions = c3.multiselect("Type de session", sorted(laps["session_type"].unique()), default=sorted(laps["session_type"].unique()))
 sel = laps[(laps["car"] == car) & (laps["track"] == track) & laps["session_type"].isin(sessions)]
 
-tab_stats, tab_plan, tab_crews, tab_laps = st.tabs(["Pilotes", "Plan de relais", "Équipages", "Tours bruts"])
+tab_stats, tab_plan, tab_crews, tab_laps = st.tabs(["Pilotes", "Paramètres course", "Équipages", "Tours bruts"])
 
 # --- onglet pilotes -----------------------------------------------------------
 with tab_stats:
@@ -125,51 +125,35 @@ with tab_stats:
         fig.update_layout(showlegend=False, height=420)
         st.plotly_chart(fig, use_container_width=True)
 
-# --- onglet plan ------------------------------------------------------------
+# --- onglet paramètres course --------------------------------------------------
 with tab_plan:
     if stats.empty:
         st.warning("Calcule d'abord les statistiques pilotes.")
     else:
-        st.subheader("Paramètres de course")
+        st.caption("Paramètres communs à toutes les voitures engagées. Le plan de chaque voiture est dans l'onglet Équipages.")
         a, b, c, d = st.columns(4)
-        duration = a.number_input("Durée (min)", 30, 1500, 360, step=30)
+        duration = a.number_input("Durée de course (min)", 30, 1500, 360, step=30)
         tank = b.number_input("Réservoir (L)", 20.0, 200.0, 100.0, step=1.0)
-        pit_loss = c.number_input("Perte par arrêt (s)", 10.0, 180.0, 60.0, step=5.0)
+        pit_loss = c.number_input("Perte par arrêt hors ravitaillement (s)", 10.0, 180.0, 60.0, step=5.0,
+                                  help="Entrée + sortie des stands + changement de pilote, sans le temps de remplissage.")
         refuel = d.number_input("Débit ravitaillement (L/s)", 0.5, 10.0, 3.0, step=0.1)
-        e, f, g = st.columns(3)
-        margin = e.number_input("Marge carburant (L)", 0.0, 10.0, 2.0, step=0.5)
-        max_stint = f.number_input("Relais max (min, 0 = aucun)", 0, 300, 0, step=10)
-        order = g.multiselect("Ordre des pilotes", stats["Pilote"].tolist(), default=stats["Pilote"].tolist())
+        e, f = st.columns(2)
+        margin = e.number_input("Marge carburant par défaut (L)", 0.0, 10.0, 2.0, step=0.5)
+        max_stint = f.number_input("Relais max par défaut (min, 0 = aucun)", 0, 300, 0, step=10,
+                                   help="Limite règlementaire de temps de volant consécutif, si la course en impose une.")
 
-        params = RaceParams(duration_min=duration, tank_l=tank, pit_loss_s=pit_loss, refuel_rate_lps=refuel,
-                            fuel_margin_l=margin, max_stint_min=max_stint or None, driver_order=order)
-        plan = plan_stints(stats, params)
-
-        if plan.empty:
-            st.warning("Choisis au moins un pilote.")
-        else:
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Relais", len(plan))
-            k2.metric("Arrêts", len(plan) - 1)
-            k3.metric("Tours estimés", int(plan["Tours cumulés"].iloc[-1]))
-            k4.metric("Carburant total (L)", round(plan["Carburant (L)"].sum(), 1))
-            st.dataframe(plan, hide_index=True, use_container_width=True)
-
-            per_driver = plan.groupby("Pilote")["Durée (min)"].sum().reset_index()
-            fig = px.bar(per_driver, x="Pilote", y="Durée (min)", title="Temps de volant par pilote", color="Pilote")
-            fig.update_layout(showlegend=False, height=320)
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.download_button("Exporter le plan (CSV)", plan.to_csv(index=False).encode(),
-                               file_name=f"relais_{track}_{int(duration)}min.csv", mime="text/csv")
+        usable = tank - margin
+        st.markdown(f"Avec ces paramètres, un pilote consommant **{stats['Conso / tour (L)'].mean():.2f} L/tour** "
+                    f"(moyenne équipe) tient **{int(usable // stats['Conso / tour (L)'].mean())} tours** par relais, "
+                    f"soit environ **{int(usable // stats['Conso / tour (L)'].mean() * stats['Rythme moyen'].mean() / 60)} min**.")
 
 # --- onglet équipages ---------------------------------------------------------
 with tab_crews:
     if stats.empty:
         st.warning("Calcule d'abord les statistiques pilotes.")
     else:
-        st.caption("Une ligne par voiture engagée. Les paramètres de course communs sont ceux de l'onglet Plan de relais ; "
-                   "chaque équipage garde ses propres pilotes et sa propre marge.")
+        st.caption("Une colonne par voiture engagée. Les pilotes alternent dans l'ordre où tu les sélectionnes ; "
+                   "les paramètres communs viennent de l'onglet Paramètres course.")
         n_crews = st.number_input("Nombre de voitures", 1, 6, 3)
         pilots = stats["Pilote"].tolist()
         crews = []
@@ -178,7 +162,7 @@ with tab_crews:
             with col:
                 name = st.text_input("Voiture", f"Bleu Mercure #{i + 1}", key=f"crew_name_{i}")
                 default = pilots[2 * i: 2 * i + 2] if 2 * i < len(pilots) else []
-                drivers = st.multiselect("Pilotes", pilots, default=default, key=f"crew_drv_{i}")
+                drivers = st.multiselect("Pilotes (ordre d'alternance)", pilots, default=default, key=f"crew_drv_{i}")
                 crew_margin = st.number_input("Marge carburant (L)", 0.0, 10.0, margin, step=0.5, key=f"crew_margin_{i}")
                 crew_stint = st.number_input("Relais max (min, 0 = aucun)", 0, 300, int(max_stint), step=10, key=f"crew_stint_{i}")
                 crews.append((name, drivers, crew_margin, crew_stint))
