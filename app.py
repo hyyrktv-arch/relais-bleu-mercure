@@ -1,4 +1,6 @@
 """Relais Bleu Mercure — planificateur de relais iRacing alimenté par Garage 61."""
+import json
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -196,4 +198,11 @@ with tab_crews:
 
 # --- onglet tours bruts -------------------------------------------------------
 with tab_laps:
-    st.dataframe(sel.sort_values("start_time", ascending=False), hide_index=True, use_container_width=True)
+    cols = [c for c in sel.columns if c not in ("raw", "imported_at")]
+    st.dataframe(sel[cols].sort_values("start_time", ascending=False), hide_index=True, use_container_width=True)
+    if "raw" in sel.columns and not sel.empty:
+        with st.expander("Structure brute renvoyée par Garage 61 (1er tour)"):
+            try:
+                st.json(json.loads(sel["raw"].iloc[0]))
+            except Exception:  # noqa: BLE001
+                st.code(sel["raw"].iloc[0])

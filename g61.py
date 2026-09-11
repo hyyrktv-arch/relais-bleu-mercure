@@ -5,6 +5,7 @@ Auth : Personal Access Token (Bearer) — à créer dans ton compte Garage 61.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -107,6 +108,23 @@ def _pick(d: dict, *keys, default=None):
 LAST_RAW: list[dict] = []
 
 
+def _name(obj, *extra_keys) -> str | None:
+    """Extrait un nom lisible d'un objet API (dict) ou d'une chaîne."""
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, dict):
+        n = _pick(obj, "name", "displayName", "fullName", "nickname", *extra_keys)
+        if n:
+            return str(n)
+        fn, ln = obj.get("firstName"), obj.get("lastName")
+        if fn or ln:
+            return f"{fn or ''} {ln or ''}".strip()
+        return str(_pick(obj, "id", "slug", default=""))
+    return str(obj)
+
+
 def normalize_laps(items: list[dict]) -> pd.DataFrame:
     """Aplatis la réponse API dans un format stable pour le moteur de relais.
 
@@ -117,21 +135,22 @@ def normalize_laps(items: list[dict]) -> pd.DataFrame:
     LAST_RAW = items[:1]
     out = []
     for it in items:
-        drv = _pick(it, "driver", default={})
-        car = _pick(it, "car", default={})
-        trk = _pick(it, "track", default={})
+        drv = _pick(it, "driver", "user", "account", "driverName", default=None)
+        car = _pick(it, "car", "carName", default=None)
+        trk = _pick(it, "track", "trackName", default=None)
         out.append(
             {
-                "lap_id": _pick(it, "id"),
-                "driver": drv.get("name") if isinstance(drv, dict) else str(drv),
-                "car": car.get("name") if isinstance(car, dict) else str(car),
-                "track": trk.get("name") if isinstance(trk, dict) else str(trk),
-                "session_type": SESSION_TYPES.get(_pick(it, "sessionType"), "?"),
-                "lap_time": _pick(it, "lapTime"),
-                "fuel_used": _pick(it, "fuelUsed"),
-                "fuel_level": _pick(it, "fuel", "fuelLevel"),
+                "lap_id": str(_pick(it, "id", "lapId", default=len(out))),
+                "driver": _name(drv) or "Inconnu",
+                "car": _name(car) or "?",
+                "track": _name(trk) or "?",
+                "session_type": SESSION_TYPES.get(_pick(it, "sessionType", "session_type"), "?"),
+                "lap_time": _pick(it, "lapTime", "lap_time", "time"),
+                "fuel_used": _pick(it, "fuelUsed", "fuel_used", "fuelConsumed"),
+                "fuel_level": _pick(it, "fuel", "fuelLevel", "fuel_level"),
                 "clean": bool(_pick(it, "clean", default=True)),
-                "start_time": _pick(it, "startTime", "time"),
+                "start_time": _pick(it, "startTime", "start_time", "date", "createdAt"),
+                "raw": json.dumps(it, ensure_ascii=False)[:4000],
             }
         )
     df = pd.DataFrame(out)

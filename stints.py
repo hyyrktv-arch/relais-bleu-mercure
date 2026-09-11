@@ -16,6 +16,7 @@ def driver_stats(laps: pd.DataFrame, trim_pct: float = 0.10) -> pd.DataFrame:
     if laps.empty:
         return pd.DataFrame()
     rows = []
+    laps["driver"] = laps["driver"].fillna("Inconnu")
     for drv, g in laps.groupby("driver"):
         g = g.sort_values("lap_time")
         cut = int(len(g) * (1 - trim_pct)) or len(g)
@@ -32,6 +33,8 @@ def driver_stats(laps: pd.DataFrame, trim_pct: float = 0.10) -> pd.DataFrame:
                 "Tours avec conso": int(g["fuel_used"].notna().sum()),
             }
         )
+    if not rows:
+        return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("Rythme moyen").reset_index(drop=True)
 
 
