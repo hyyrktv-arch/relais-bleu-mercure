@@ -47,6 +47,7 @@ class RaceParams:
     refuel_rate_lps: float = 3.0      # litres/seconde au ravitaillement
     fuel_margin_l: float = 2.0        # réserve de sécurité en fin de relais
     max_stint_min: float | None = None  # limite règlementaire (ex : 120 min) ou None
+    start_fuel_l: float | None = None   # carburant imposé au départ (ex : plein obligatoire) ou None
     driver_order: list[str] = field(default_factory=list)
 
 
@@ -178,16 +179,28 @@ def suggest_sequence(stats: pd.DataFrame, p: RaceParams, drivers: list[str],
         return [(r["Pilote"], p.tank_l) for _, r in base.iterrows()]
     n = n_stints or len(base)
     total_fuel = float(base["Carburant (L)"].sum())
-    per = min(p.tank_l, total_fuel / n + p.fuel_margin_l)
-    seq = [(drivers[i % len(drivers)], per) for i in range(n)]
-    # ajuste le carburant par relais pour couvrir exactement la course
+    first = p.start_fuel_l if p.start_fuel_l else None
     s = stats.set_index("Pilote")
-    for _ in range(6):
+    pace = s.loc[drivers, "Rythme moyen"].mean()
+    cons = s.loc[drivers, "Conso / tour (L)"].mean()
+
+    def build(per: float) -> list[tuple[str, float]]:
+        seq = [(drivers[i % len(drivers)], round(min(p.tank_l, per), 1)) for i in range(n)]
+        if first is not None:
+            seq[0] = (seq[0][0], round(first, 1))
+        return seq
+
+    rest = n - (1 if first is not None else 0)
+    if rest <= 0:
+        return build(first or p.tank_l)
+    per = (total_fuel - (first or 0)) / rest + p.fuel_margin_l
+    seq = build(per)
+    # ajuste le carburant des relais libres pour couvrir exactement la course
+    for _ in range(8):
         _, cov = plan_from_sequence(stats, p, seq)
         gap = cov.get("manque_s", 0) - cov.get("trop_s", 0)
-        if abs(gap) < s.loc[drivers, "Rythme moyen"].mean():
+        if abs(gap) < pace:
             break
-        extra_laps = gap / s.loc[drivers, "Rythme moyen"].mean()
-        per = min(p.tank_l, max(p.fuel_margin_l + 1, per + extra_laps * s.loc[drivers, "Conso / tour (L)"].mean() / n))
-        seq = [(d, round(per, 1)) for d, _ in seq]
+        per = max(p.fuel_margin_l + 1, per + (gap / pace) * cons / rest)
+        seq = build(per)
     return [(d, round(f, 1)) for d, f in seq]

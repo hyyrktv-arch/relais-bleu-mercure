@@ -141,10 +141,12 @@ with tab_plan:
         pit_loss = c.number_input("Perte par arrêt hors ravitaillement (s)", 10.0, 180.0, 60.0, step=5.0,
                                   help="Entrée + sortie des stands + changement de pilote, sans le temps de remplissage.")
         refuel = d.number_input("Débit ravitaillement (L/s)", 0.5, 10.0, 3.0, step=0.1)
-        e, f = st.columns(2)
+        e, f, g = st.columns(3)
         margin = e.number_input("Marge carburant par défaut (L)", 0.0, 10.0, 2.0, step=0.5)
         max_stint = f.number_input("Relais max par défaut (min, 0 = aucun)", 0, 300, 0, step=10,
                                    help="Limite règlementaire de temps de volant consécutif, si la course en impose une.")
+        start_fuel = g.number_input("Carburant imposé au départ (L, 0 = libre)", 0.0, 200.0, 0.0, step=1.0,
+                                    help="Certaines endurances imposent le plein au départ. La proposition équilibrée en tient compte.")
 
         usable = tank - margin
         st.markdown(f"Avec ces paramètres, un pilote consommant **{stats['Conso / tour (L)'].mean():.2f} L/tour** "
@@ -159,7 +161,8 @@ with tab_crews:
         st.caption("Une voiture par bloc. Propose une séquence puis modifie librement chaque relais : pilote et carburant embarqué.")
         n_crews = st.number_input("Nombre de voitures", 1, 6, 3)
         pilots = stats["Pilote"].tolist()
-        common = dict(duration_min=duration, tank_l=tank, pit_loss_s=pit_loss, refuel_rate_lps=refuel)
+        common = dict(duration_min=duration, tank_l=tank, pit_loss_s=pit_loss, refuel_rate_lps=refuel,
+                      start_fuel_l=start_fuel or None)
         summary, plans = [], {}
 
         for i in range(int(n_crews)):
@@ -205,6 +208,8 @@ with tab_crews:
             plan, cov = plan_from_sequence(stats, params, new_seq)
             if plan.empty:
                 continue
+            if start_fuel and new_seq and abs(new_seq[0][1] - start_fuel) > 0.05:
+                st.warning(f"Le règlement impose {start_fuel:.0f} L au départ, le relais 1 en prévoit {new_seq[0][1]:.1f} L.")
             plans[name] = plan
 
             if cov["manque_s"] > 0:
