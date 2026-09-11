@@ -30,7 +30,8 @@ class G61Client:
                 continue
             clean[k] = ",".join(map(str, v)) if isinstance(v, list) else v
         r = self.s.get(BASE_URL + endpoint, params=clean, timeout=30)
-        r.raise_for_status()
+        if not r.ok:
+            raise RuntimeError(f"HTTP {r.status_code} sur {endpoint} — {r.text[:500]}")
         return r.json()
 
     # --- référentiels -----------------------------------------------------
@@ -54,8 +55,8 @@ class G61Client:
         tracks: list[int] | None = None,
         age_days: int | None = 90,
         session_types: list[int] | None = None,
-        include_unclean: bool = True,
-        limit: int = 500,
+        include_unclean: bool | None = None,
+        limit: int = 100,
     ) -> pd.DataFrame:
         """Tous les tours (group=none) de l'équipe, paginés."""
         rows: list[dict] = []
@@ -69,7 +70,7 @@ class G61Client:
                 age=age_days,
                 sessionTypes=session_types,
                 lapTypes=[1],           # tours complets uniquement
-                unclean=str(include_unclean).lower(),
+                unclean=None if include_unclean is None else str(include_unclean).lower(),
                 group="none",
                 limit=limit,
                 offset=offset,

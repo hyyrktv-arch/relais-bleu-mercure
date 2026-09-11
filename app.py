@@ -32,6 +32,17 @@ with st.sidebar:
         age = st.number_input("Historique (jours)", 7, 365, 60)
         sess = st.multiselect("Sessions", ["Practice", "Qualifying", "Race"], default=["Practice", "Race"])
         sess_ids = [k for k, v in g61.SESSION_TYPES.items() if v in sess]
+        if st.button("Tester la connexion", disabled=not token):
+            try:
+                r = g61.requests.get(g61.BASE_URL + "me", headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                if r.ok:
+                    st.success(f"Connecté : {r.json().get('name', r.json())}")
+                else:
+                    st.error(f"HTTP {r.status_code} — {r.text[:400]}")
+                    st.caption(f"Token : {len(token)} caractères, commence par « {token[:4]}… »")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Erreur réseau : {e}")
+
         if st.button("Importer les tours", type="primary", disabled=not token):
             with st.spinner("Import Garage 61…"):
                 try:
