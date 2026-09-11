@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -30,10 +31,20 @@ class G61Client:
             if v is None:
                 continue
             clean[k] = ",".join(map(str, v)) if isinstance(v, list) else v
-        r = self.s.get(BASE_URL + endpoint, params=clean, timeout=30)
-        if not r.ok:
-            raise RuntimeError(f"HTTP {r.status_code} sur {endpoint} — {r.text[:500]}")
-        return r.json()
+        for attempt in range(3):
+            r = self.s.get(BASE_URL + endpoint, params=clean, timeout=30)
+            if r.status_code == 429 and attempt < 2:
+                wait = 30
+                try:
+                    wait = int(r.json().get("details", {}).get("retryAfterSeconds", wait))
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(min(wait, 120) + 1)
+                continue
+            if not r.ok:
+                raise RuntimeError(f"HTTP {r.status_code} sur {endpoint} — {r.text[:500]}")
+            return r.json()
+        raise RuntimeError("Garage 61 : limite de débit atteinte, réessaie dans quelques minutes.")
 
     # --- référentiels -----------------------------------------------------
     def me(self) -> dict:
@@ -81,6 +92,7 @@ class G61Client:
             if len(items) < limit:
                 break
             offset += limit
+            time.sleep(1.5)  # ménage la limite de débit
         return normalize_laps(rows)
 
 
@@ -176,6 +188,11 @@ def save_laps(df: pd.DataFrame, path: str = DB_PATH) -> int:
         new["imported_at"] = datetime.now(timezone.utc).isoformat()
         new.to_sql("laps", con, if_exists="append", index=False)
         return len(new)
+
+
+def clear_laps(path: str = DB_PATH) -> None:
+    with sqlite3.connect(path) as con:
+        con.execute("DROP TABLE IF EXISTS laps")
 
 
 def load_laps(path: str = DB_PATH) -> pd.DataFrame:

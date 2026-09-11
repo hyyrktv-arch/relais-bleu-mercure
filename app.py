@@ -63,8 +63,13 @@ with st.sidebar:
             except Exception as e:  # noqa: BLE001
                 st.error(f"Erreur réseau : {e}")
 
+        if st.button("Vider la base locale"):
+            g61.clear_laps()
+            st.success("Base vidée")
+            st.rerun()
+
         if st.button("Importer les tours", type="primary", disabled=not (token and track_ids)):
-            with st.spinner("Import Garage 61…"):
+            with st.spinner("Import Garage 61 (peut prendre 1 à 2 min si la limite de débit est atteinte)…"):
                 try:
                     df = g61.G61Client(token).laps(team_slug=team_slug, tracks=track_ids, cars=car_ids,
                                                    age_days=age, session_types=sess_ids)
