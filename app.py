@@ -6,7 +6,7 @@ import plotly.express as px
 import streamlit as st
 
 import g61
-from stints import RaceParams, driver_stats, plan_stints
+from stints import RaceParams, driver_stats, plan_from_sequence, suggest_sequence
 
 st.set_page_config(page_title="Relais Bleu Mercure", page_icon="🏁", layout="wide")
 
@@ -114,11 +114,15 @@ with tab_stats:
     if stats.empty:
         st.warning("Pas assez de tours propres pour cette sélection.")
     else:
+        show = stats[["Pilote", "Temps cible", "Tours", "Meilleur", "Rythme moyen", "Écart-type",
+                      "Conso / tour (L)", "Conso max (L)", "Tours avec conso"]]
         st.dataframe(
-            stats.style.format({"Meilleur": "{:.3f}", "Rythme moyen": "{:.3f}", "Écart-type": "{:.3f}",
-                                "Conso / tour (L)": "{:.2f}", "Conso max (L)": "{:.2f}"}),
+            show.style.format({"Meilleur": "{:.3f}", "Rythme moyen": "{:.3f}", "Écart-type": "{:.3f}",
+                               "Conso / tour (L)": "{:.2f}", "Conso max (L)": "{:.2f}"}),
             hide_index=True, use_container_width=True,
         )
+        st.caption("Temps cible = rythme moyen sur tours propres après retrait des tours lents (curseur ci-dessus). "
+                   "C'est le tour que chaque pilote doit répéter pour que le plan de relais se réalise.")
         clean = sel[sel["clean"]].dropna(subset=["lap_time"])
         fig = px.box(clean, x="driver", y="lap_time", color="driver", points="all",
                      labels={"driver": "", "lap_time": "Temps au tour (s)"}, title="Distribution des temps au tour")
@@ -152,49 +156,85 @@ with tab_crews:
     if stats.empty:
         st.warning("Calcule d'abord les statistiques pilotes.")
     else:
-        st.caption("Une colonne par voiture engagée. Les pilotes alternent dans l'ordre où tu les sélectionnes ; "
-                   "les paramètres communs viennent de l'onglet Paramètres course.")
+        st.caption("Une voiture par bloc. Propose une séquence puis modifie librement chaque relais : pilote et carburant embarqué.")
         n_crews = st.number_input("Nombre de voitures", 1, 6, 3)
         pilots = stats["Pilote"].tolist()
-        crews = []
-        cols = st.columns(int(n_crews))
-        for i, col in enumerate(cols):
-            with col:
-                name = st.text_input("Voiture", f"Bleu Mercure #{i + 1}", key=f"crew_name_{i}")
-                default = pilots[2 * i: 2 * i + 2] if 2 * i < len(pilots) else []
-                drivers = st.multiselect("Pilotes (ordre d'alternance)", pilots, default=default, key=f"crew_drv_{i}")
-                crew_margin = st.number_input("Marge carburant (L)", 0.0, 10.0, margin, step=0.5, key=f"crew_margin_{i}")
-                crew_stint = st.number_input("Relais max (min, 0 = aucun)", 0, 300, int(max_stint), step=10, key=f"crew_stint_{i}")
-                crews.append((name, drivers, crew_margin, crew_stint))
+        common = dict(duration_min=duration, tank_l=tank, pit_loss_s=pit_loss, refuel_rate_lps=refuel)
+        summary, plans = [], {}
 
-        rows, plans = [], {}
-        for name, drivers, crew_margin, crew_stint in crews:
-            if not drivers:
+        for i in range(int(n_crews)):
+            st.divider()
+            h1, h2, h3, h4 = st.columns([2, 3, 1.2, 1.2])
+            name = h1.text_input("Voiture", f"Bleu Mercure #{i + 1}", key=f"crew_name_{i}")
+            default = pilots[2 * i: 2 * i + 2] if 2 * i < len(pilots) else []
+            drivers = h2.multiselect("Pilotes de la voiture", pilots, default=default, key=f"crew_drv_{i}")
+            crew_margin = h3.number_input("Marge (L)", 0.0, 10.0, margin, step=0.5, key=f"crew_margin_{i}")
+            crew_stint = h4.number_input("Relais max (min)", 0, 300, int(max_stint), step=10, key=f"crew_stint_{i}")
+            params = RaceParams(**common, fuel_margin_l=crew_margin, max_stint_min=crew_stint or None, driver_order=drivers)
+
+            g1, g2, g3 = st.columns([1.5, 1, 1])
+            mode = g1.radio("Proposition", ["Pleins complets", "Carburant équilibré"], horizontal=True, key=f"mode_{i}")
+            n_st = g2.number_input("Nombre de relais", 1, 40, 4, key=f"nst_{i}", disabled=mode == "Pleins complets")
+            seq_key, ver_key = f"seq_{i}", f"seqver_{i}"
+            if g3.button("Proposer la séquence", key=f"gen_{i}", disabled=not drivers):
+                st.session_state[seq_key] = suggest_sequence(
+                    stats, params, drivers, "plein" if mode == "Pleins complets" else "equilibre", int(n_st))
+                st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
+
+            if seq_key not in st.session_state and drivers:
+                st.session_state[seq_key] = suggest_sequence(stats, params, drivers, "plein")
+
+            seq = st.session_state.get(seq_key, [])
+            if not drivers or not seq:
+                st.info("Choisis les pilotes de cette voiture.")
                 continue
-            p = RaceParams(duration_min=duration, tank_l=tank, pit_loss_s=pit_loss, refuel_rate_lps=refuel,
-                           fuel_margin_l=crew_margin, max_stint_min=crew_stint or None, driver_order=drivers)
-            plan = plan_stints(stats, p)
+
+            edit_df = pd.DataFrame(seq, columns=["Pilote", "Carburant embarqué (L)"])
+            edit_df.insert(0, "Relais", range(1, len(edit_df) + 1))
+            edited = st.data_editor(
+                edit_df, hide_index=True, use_container_width=True, num_rows="dynamic",
+                key=f"editor_{i}_{st.session_state.get(ver_key, 0)}",
+                column_config={
+                    "Relais": st.column_config.NumberColumn(disabled=True),
+                    "Pilote": st.column_config.SelectboxColumn(options=drivers, required=True),
+                    "Carburant embarqué (L)": st.column_config.NumberColumn(min_value=1.0, max_value=float(tank), step=0.5, format="%.1f"),
+                },
+            )
+            new_seq = [(r["Pilote"], float(r["Carburant embarqué (L)"])) for _, r in edited.iterrows()
+                       if pd.notna(r["Pilote"]) and pd.notna(r["Carburant embarqué (L)"])]
+            plan, cov = plan_from_sequence(stats, params, new_seq)
+            if plan.empty:
+                continue
             plans[name] = plan
-            avg_pace = stats.set_index("Pilote").loc[drivers, "Rythme moyen"].mean()
-            rows.append({
-                "Voiture": name,
-                "Pilotes": " / ".join(drivers),
-                "Rythme moyen (s)": round(avg_pace, 3),
-                "Relais": len(plan),
-                "Arrêts": len(plan) - 1,
-                "Tours estimés": int(plan["Tours cumulés"].iloc[-1]),
-                "Carburant (L)": round(plan["Carburant (L)"].sum(), 1),
+
+            if cov["manque_s"] > 0:
+                st.error(f"La séquence s'arrête {cov['manque_s'] / 60:.1f} min avant la fin de course : ajoute un relais ou du carburant.")
+            elif cov["trop_s"] > 60:
+                st.info(f"Marge de {cov['trop_s'] / 60:.1f} min au-delà de la fin de course, le dernier relais sera raccourci.")
+            else:
+                st.success("La séquence couvre la course.")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Relais", len(plan))
+            m2.metric("Arrêts", len(plan) - 1)
+            m3.metric("Tours estimés", int(cov["tours"]))
+            m4.metric("Carburant total (L)", cov["carburant_total"])
+            st.dataframe(plan, hide_index=True, use_container_width=True)
+            st.download_button("Exporter (CSV)", plan.to_csv(index=False).encode(),
+                               file_name=f"relais_{name.replace(' ', '_')}.csv", mime="text/csv", key=f"dl_{i}")
+
+            per_driver = plan.groupby("Pilote")["Durée (min)"].sum()
+            summary.append({
+                "Voiture": name, "Pilotes": " / ".join(drivers), "Relais": len(plan), "Arrêts": len(plan) - 1,
+                "Tours estimés": int(cov["tours"]), "Carburant (L)": cov["carburant_total"],
                 "Temps aux stands (s)": int(pd.to_numeric(plan["Arrêt (s)"], errors="coerce").fillna(0).sum()),
+                "Volant max/min (min)": f"{per_driver.max():.0f} / {per_driver.min():.0f}",
             })
 
-        if rows:
-            st.subheader("Comparatif")
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-            for name, plan in plans.items():
-                with st.expander(f"Plan détaillé — {name}"):
-                    st.dataframe(plan, hide_index=True, use_container_width=True)
-                    st.download_button("Exporter (CSV)", plan.to_csv(index=False).encode(),
-                                       file_name=f"relais_{name.replace(' ', '_')}.csv", mime="text/csv", key=f"dl_{name}")
+        if summary:
+            st.divider()
+            st.subheader("Comparatif des voitures")
+            st.dataframe(pd.DataFrame(summary), hide_index=True, use_container_width=True)
 
 # --- onglet tours bruts -------------------------------------------------------
 with tab_laps:

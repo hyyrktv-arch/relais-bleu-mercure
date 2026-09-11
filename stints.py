@@ -31,6 +31,7 @@ def driver_stats(laps: pd.DataFrame, trim_pct: float = 0.10) -> pd.DataFrame:
                 "Conso / tour (L)": kept["fuel_used"].mean(),
                 "Conso max (L)": g["fuel_used"].quantile(0.9),
                 "Tours avec conso": int(g["fuel_used"].notna().sum()),
+                "Temps cible": fmt_lap(kept["lap_time"].mean()),
             }
         )
     if not rows:
@@ -101,7 +102,92 @@ def plan_stints(stats: pd.DataFrame, p: RaceParams) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def fmt_lap(seconds: float) -> str:
+    """128.743 -> 2:08.743"""
+    if seconds is None or pd.isna(seconds):
+        return "—"
+    m, sec = divmod(float(seconds), 60)
+    return f"{int(m)}:{sec:06.3f}"
+
+
 def _fmt(seconds: float) -> str:
     h, r = divmod(int(seconds), 3600)
     m, s = divmod(r, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+# --- plans à séquence explicite -------------------------------------------------
+
+def plan_from_sequence(stats: pd.DataFrame, p: RaceParams, sequence: list[tuple[str, float]]) -> tuple[pd.DataFrame, dict]:
+    """Plan à partir d'une liste (pilote, carburant embarqué) définie relais par relais.
+
+    Le carburant du relais i est celui mis dans la voiture au départ du relais i
+    (relais 1 = plein de départ). Retourne le plan et un bilan de couverture.
+    """
+    if stats.empty or not sequence:
+        return pd.DataFrame(), {}
+    s = stats.set_index("Pilote")
+    total_s = p.duration_min * 60
+    t, lap_no, rows = 0.0, 0, []
+    for i, (drv, fuel) in enumerate(sequence):
+        if drv not in s.index:
+            continue
+        pace, cons = s.loc[drv, "Rythme moyen"], s.loc[drv, "Conso / tour (L)"]
+        fuel = min(float(fuel), p.tank_l)
+        laps_fuel = max(0, int((fuel - p.fuel_margin_l) // cons))
+        laps_time = int((p.max_stint_min * 60) // pace) if p.max_stint_min else laps_fuel
+        laps_left = max(0, int((total_s - t) // pace) + 1)
+        n = max(0, min(laps_fuel, laps_time, laps_left))
+        stint_s = n * pace
+        last = (i == len(sequence) - 1) or (t + stint_s >= total_s)
+        pit = 0.0 if last else p.pit_loss_s + (sequence[i + 1][1] / p.refuel_rate_lps)
+        limite = "Fin de course" if t + stint_s >= total_s else ("Temps max" if n == laps_time and laps_time < laps_fuel else "Carburant")
+        rows.append({
+            "Relais": i + 1, "Pilote": drv, "Temps cible": fmt_lap(pace), "Conso cible (L)": round(cons, 2),
+            "Début": _fmt(t), "Fin": _fmt(t + stint_s),
+            "Durée (min)": round(stint_s / 60, 1), "Tours": n, "Tours cumulés": lap_no + n,
+            "Carburant embarqué (L)": round(fuel, 1), "Carburant restant (L)": round(fuel - n * cons, 1),
+            "Arrêt (s)": round(pit) if not last else "—", "Limite": limite,
+        })
+        t += stint_s + pit
+        lap_no += n
+        if t >= total_s:
+            break
+    plan = pd.DataFrame(rows)
+    coverage = {
+        "fin_plan_s": t, "course_s": total_s, "manque_s": max(0.0, total_s - t),
+        "trop_s": max(0.0, t - total_s), "tours": lap_no,
+        "carburant_total": round(sum(f for _, f in sequence[: len(rows)]), 1),
+    }
+    return plan, coverage
+
+
+def suggest_sequence(stats: pd.DataFrame, p: RaceParams, drivers: list[str],
+                     mode: str = "plein", n_stints: int | None = None) -> list[tuple[str, float]]:
+    """Propose une séquence (pilote, carburant).
+
+    mode="plein"     : pleins complets, pilotes en alternance, autant de relais que nécessaire.
+    mode="equilibre" : n_stints relais avec le même carburant chacun (ex. 80/80 au lieu de 100/60).
+    """
+    if stats.empty or not drivers:
+        return []
+    base = plan_stints(stats, RaceParams(**{**p.__dict__, "driver_order": drivers}))
+    if base.empty:
+        return []
+    if mode == "plein":
+        return [(r["Pilote"], p.tank_l) for _, r in base.iterrows()]
+    n = n_stints or len(base)
+    total_fuel = float(base["Carburant (L)"].sum())
+    per = min(p.tank_l, total_fuel / n + p.fuel_margin_l)
+    seq = [(drivers[i % len(drivers)], per) for i in range(n)]
+    # ajuste le carburant par relais pour couvrir exactement la course
+    s = stats.set_index("Pilote")
+    for _ in range(6):
+        _, cov = plan_from_sequence(stats, p, seq)
+        gap = cov.get("manque_s", 0) - cov.get("trop_s", 0)
+        if abs(gap) < s.loc[drivers, "Rythme moyen"].mean():
+            break
+        extra_laps = gap / s.loc[drivers, "Rythme moyen"].mean()
+        per = min(p.tank_l, max(p.fuel_margin_l + 1, per + extra_laps * s.loc[drivers, "Conso / tour (L)"].mean() / n))
+        seq = [(d, round(per, 1)) for d, _ in seq]
+    return [(d, round(f, 1)) for d, f in seq]
