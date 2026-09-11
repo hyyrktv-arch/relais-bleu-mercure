@@ -21,9 +21,10 @@ LAP_TYPES = {1: "Normal", 2: "Joker", 3: "Out lap", 4: "In lap"}
 
 
 class G61Client:
-    def __init__(self, token: str):
+    def __init__(self, token: str, log=None):
         self.s = requests.Session()
         self.s.headers["Authorization"] = f"Bearer {token}"
+        self.log = log or (lambda msg: None)
 
     def _get(self, endpoint: str, **params) -> dict | list:
         clean = {}
@@ -31,15 +32,18 @@ class G61Client:
             if v is None:
                 continue
             clean[k] = ",".join(map(str, v)) if isinstance(v, list) else v
-        for attempt in range(3):
+        for attempt in range(2):
             r = self.s.get(BASE_URL + endpoint, params=clean, timeout=30)
-            if r.status_code == 429 and attempt < 2:
+            if r.status_code == 429 and attempt == 0:
                 wait = 30
                 try:
                     wait = int(r.json().get("details", {}).get("retryAfterSeconds", wait))
                 except Exception:  # noqa: BLE001
                     pass
-                time.sleep(min(wait, 120) + 1)
+                if wait > 60:
+                    raise RuntimeError(f"Garage 61 demande d'attendre {wait} s avant de réessayer.")
+                self.log(f"Limite de débit : attente {wait} s…")
+                time.sleep(wait + 1)
                 continue
             if not r.ok:
                 raise RuntimeError(f"HTTP {r.status_code} sur {endpoint} — {r.text[:500]}")
@@ -89,6 +93,7 @@ class G61Client:
                 offset=offset,
             )
             items = data.get("items", [])
+            self.log(f"Page {_page + 1} : {len(items)} tours reçus (total {len(rows) + len(items)})")
             fresh = [it for it in items if str(it.get("id")) not in seen]
             seen.update(str(it.get("id")) for it in items)
             rows.extend(fresh)

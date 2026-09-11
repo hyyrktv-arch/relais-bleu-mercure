@@ -69,10 +69,11 @@ with st.sidebar:
             st.rerun()
 
         if st.button("Importer les tours", type="primary", disabled=not (token and track_ids)):
-            with st.spinner("Import Garage 61 (peut prendre 1 à 2 min si la limite de débit est atteinte)…"):
+            with st.status("Import Garage 61…", expanded=True) as status:
                 try:
-                    df = g61.G61Client(token).laps(team_slug=team_slug, tracks=track_ids, cars=car_ids,
-                                                   age_days=age, session_types=sess_ids)
+                    df = g61.G61Client(token, log=st.write).laps(team_slug=team_slug, tracks=track_ids, cars=car_ids,
+                                                                 age_days=age, session_types=sess_ids)
+                    status.update(label="Import terminé", state="complete", expanded=False)
                     n = g61.save_laps(df)
                     st.success(f"{len(df)} tours récupérés, {n} nouveaux enregistrés")
                     if not df.empty:
