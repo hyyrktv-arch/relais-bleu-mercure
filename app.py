@@ -68,19 +68,29 @@ with st.sidebar:
             st.success("Base vidée")
             st.rerun()
 
-        if st.button("Importer les tours", type="primary", disabled=not (token and track_ids)):
+        resume_key = f"offset:{track_ids[0] if track_ids else ''}:{','.join(map(str, car_ids or []))}"
+        resume_from = st.session_state.get(resume_key, 0)
+        label = f"Reprendre l'import (à partir du tour {resume_from + 1})" if resume_from else "Importer les tours"
+        if st.button(label, type="primary", disabled=not (token and track_ids)):
             with st.status("Import Garage 61…", expanded=True) as status:
                 try:
-                    df = g61.G61Client(token, log=st.write).laps(team_slug=team_slug, tracks=track_ids, cars=car_ids,
-                                                                 age_days=age, session_types=sess_ids)
-                    status.update(label="Import terminé", state="complete", expanded=False)
+                    df, nxt, note = g61.G61Client(token, log=st.write).laps(
+                        team_slug=team_slug, tracks=track_ids, cars=car_ids, age_days=age,
+                        session_types=sess_ids, start_offset=resume_from)
                     n = g61.save_laps(df)
-                    st.success(f"{len(df)} tours récupérés, {n} nouveaux enregistrés")
+                    if nxt is None:
+                        st.session_state.pop(resume_key, None)
+                        status.update(label=f"Import terminé : {n} nouveaux tours", state="complete", expanded=False)
+                    else:
+                        st.session_state[resume_key] = nxt
+                        status.update(label=f"{n} tours enregistrés — {note}", state="running", expanded=False)
+                        st.warning("Reclique dans 2 minutes pour récupérer la suite.")
                     if not df.empty:
                         with st.expander("Aperçu brut du 1er tour (pour vérifier les champs)"):
                             st.json(g61.LAST_RAW[0] if g61.LAST_RAW else {})
                 except Exception as e:  # noqa: BLE001
-                    st.error(f"Import impossible : {e}")
+                    status.update(label="Import impossible", state="error")
+                    st.error(str(e))
 
 laps = g61.demo_laps() if demo else g61.load_laps()
 

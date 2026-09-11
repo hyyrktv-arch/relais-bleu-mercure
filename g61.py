@@ -20,6 +20,12 @@ SESSION_TYPES = {1: "Practice", 2: "Qualifying", 3: "Race"}
 LAP_TYPES = {1: "Normal", 2: "Joker", 3: "Out lap", 4: "In lap"}
 
 
+class RateLimited(Exception):
+    def __init__(self, wait: int):
+        super().__init__(f"Garage 61 demande d'attendre {wait} s")
+        self.wait = wait
+
+
 class G61Client:
     def __init__(self, token: str, log=None):
         self.s = requests.Session()
@@ -40,15 +46,15 @@ class G61Client:
                     wait = int(r.json().get("details", {}).get("retryAfterSeconds", wait))
                 except Exception:  # noqa: BLE001
                     pass
-                if wait > 60:
-                    raise RuntimeError(f"Garage 61 demande d'attendre {wait} s avant de réessayer.")
+                if wait > 45:
+                    raise RateLimited(wait)
                 self.log(f"Limite de débit : attente {wait} s…")
                 time.sleep(wait + 1)
                 continue
             if not r.ok:
                 raise RuntimeError(f"HTTP {r.status_code} sur {endpoint} — {r.text[:500]}")
             return r.json()
-        raise RuntimeError("Garage 61 : limite de débit atteinte, réessaie dans quelques minutes.")
+        raise RateLimited(60)
 
     # --- référentiels -----------------------------------------------------
     def me(self) -> dict:
@@ -73,14 +79,22 @@ class G61Client:
         session_types: list[int] | None = None,
         include_unclean: bool | None = None,
         limit: int = 100,
-    ) -> pd.DataFrame:
-        """Tous les tours (group=none) de l'équipe, paginés."""
+        start_offset: int = 0,
+    ) -> tuple[pd.DataFrame, int | None, str]:
+        """Tours de l'équipe (group=none), paginés et reprenables.
+
+        Retourne (tours, offset_suivant ou None si terminé, note).
+        En cas de limite de débit, renvoie ce qui a déjà été reçu.
+        """
         rows: list[dict] = []
         seen: set = set()
-        offset = 0
+        offset = start_offset
+        next_offset: int | None = None
+        note = "Import terminé"
         for _page in range(15):  # 15 pages max = 1500 tours
-            data = self._get(
-                "laps",
+            try:
+                data = self._get(
+                    "laps",
                 teams=team_slug,
                 cars=cars,
                 tracks=tracks,
@@ -89,11 +103,15 @@ class G61Client:
                 lapTypes=[1],           # tours complets uniquement
                 unclean=None if include_unclean is None else str(include_unclean).lower(),
                 group="none",
-                limit=limit,
-                offset=offset,
-            )
+                    limit=limit,
+                    offset=offset,
+                )
+            except RateLimited as e:
+                next_offset = offset
+                note = f"Limite de débit : {len(rows)} tours reçus, reprise possible dans {e.wait} s"
+                break
             items = data.get("items", [])
-            self.log(f"Page {_page + 1} : {len(items)} tours reçus (total {len(rows) + len(items)})")
+            self.log(f"Tours {offset + 1}-{offset + len(items)} reçus")
             fresh = [it for it in items if str(it.get("id")) not in seen]
             seen.update(str(it.get("id")) for it in items)
             rows.extend(fresh)
@@ -101,7 +119,7 @@ class G61Client:
                 break
             offset += limit
             time.sleep(1.5)  # ménage la limite de débit
-        return normalize_laps(rows)
+        return normalize_laps(rows), next_offset, note
 
 
 def _catalog(items: list[dict]) -> pd.DataFrame:
