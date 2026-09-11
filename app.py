@@ -32,6 +32,25 @@ with st.sidebar:
         age = st.number_input("Historique (jours)", 7, 365, 60)
         sess = st.multiselect("Sessions", ["Practice", "Qualifying", "Race"], default=["Practice", "Race"])
         sess_ids = [k for k, v in g61.SESSION_TYPES.items() if v in sess]
+
+        @st.cache_data(ttl=3600, show_spinner="Chargement des circuits et voitures…")
+        def catalogs(tok: str):
+            c = g61.G61Client(tok)
+            return c.tracks(), c.cars()
+
+        tracks_df, cars_df = pd.DataFrame(), pd.DataFrame()
+        if token:
+            try:
+                tracks_df, cars_df = catalogs(token)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Catalogue indisponible : {e}")
+
+        track_name = st.selectbox("Circuit à importer", tracks_df["name"].tolist() if not tracks_df.empty else [],
+                                  index=None, placeholder="Choisir un circuit")
+        car_names = st.multiselect("Voitures (vide = toutes)", cars_df["name"].tolist() if not cars_df.empty else [])
+        track_ids = tracks_df.loc[tracks_df["name"] == track_name, "id"].tolist() if track_name else []
+        car_ids = cars_df.loc[cars_df["name"].isin(car_names), "id"].tolist() or None
+
         if st.button("Tester la connexion", disabled=not token):
             try:
                 r = g61.requests.get(g61.BASE_URL + "me", headers={"Authorization": f"Bearer {token}"}, timeout=15)
@@ -39,16 +58,19 @@ with st.sidebar:
                     st.success(f"Connecté : {r.json().get('name', r.json())}")
                 else:
                     st.error(f"HTTP {r.status_code} — {r.text[:400]}")
-                    st.caption(f"Token : {len(token)} caractères, commence par « {token[:4]}… »")
             except Exception as e:  # noqa: BLE001
                 st.error(f"Erreur réseau : {e}")
 
-        if st.button("Importer les tours", type="primary", disabled=not token):
+        if st.button("Importer les tours", type="primary", disabled=not (token and track_ids)):
             with st.spinner("Import Garage 61…"):
                 try:
-                    df = g61.G61Client(token).laps(team_slug=team_slug, age_days=age, session_types=sess_ids)
+                    df = g61.G61Client(token).laps(team_slug=team_slug, tracks=track_ids, cars=car_ids,
+                                                   age_days=age, session_types=sess_ids)
                     n = g61.save_laps(df)
                     st.success(f"{len(df)} tours récupérés, {n} nouveaux enregistrés")
+                    if not df.empty:
+                        with st.expander("Aperçu brut du 1er tour (pour vérifier les champs)"):
+                            st.json(g61.LAST_RAW[0] if g61.LAST_RAW else {})
                 except Exception as e:  # noqa: BLE001
                     st.error(f"Import impossible : {e}")
 

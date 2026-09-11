@@ -42,10 +42,10 @@ class G61Client:
         return self._get("teams").get("items", [])
 
     def cars(self) -> pd.DataFrame:
-        return pd.DataFrame(self._get("cars").get("items", []))
+        return _catalog(self._get("cars").get("items", []))
 
     def tracks(self) -> pd.DataFrame:
-        return pd.DataFrame(self._get("tracks").get("items", []))
+        return _catalog(self._get("tracks").get("items", []))
 
     # --- tours ------------------------------------------------------------
     def laps(
@@ -83,6 +83,19 @@ class G61Client:
         return normalize_laps(rows)
 
 
+def _catalog(items: list[dict]) -> pd.DataFrame:
+    """Liste id/nom triée, pour les menus déroulants (voitures, circuits)."""
+    rows = []
+    for it in items:
+        name = _pick(it, "name", "displayName", "title", default=str(it.get("id")))
+        variant = _pick(it, "variant", "configName", "layout")
+        if variant and variant not in name:
+            name = f"{name} — {variant}"
+        rows.append({"id": it.get("id"), "name": name})
+    df = pd.DataFrame(rows)
+    return df.sort_values("name").reset_index(drop=True) if not df.empty else df
+
+
 def _pick(d: dict, *keys, default=None):
     """Retourne la première clé présente (les noms exacts peuvent varier selon la doc)."""
     for k in keys:
@@ -91,12 +104,17 @@ def _pick(d: dict, *keys, default=None):
     return default
 
 
+LAST_RAW: list[dict] = []
+
+
 def normalize_laps(items: list[dict]) -> pd.DataFrame:
     """Aplatis la réponse API dans un format stable pour le moteur de relais.
 
     Colonnes : lap_id, driver, car, track, session_type, lap_time, fuel_used,
                fuel_level, clean, start_time
     """
+    global LAST_RAW
+    LAST_RAW = items[:1]
     out = []
     for it in items:
         drv = _pick(it, "driver", default={})
