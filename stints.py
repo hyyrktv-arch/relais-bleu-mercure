@@ -10,8 +10,11 @@ def driver_stats(laps: pd.DataFrame, trim_pct: float = 0.10) -> pd.DataFrame:
     """Rythme et conso par pilote, en écartant les tours les plus lents (trafic, erreurs)."""
     if laps.empty:
         return pd.DataFrame()
-    laps = laps.dropna(subset=["lap_time", "fuel_used"])
+    laps = laps.dropna(subset=["lap_time"]).copy()
+    laps["clean"] = laps["clean"].astype(bool)
     laps = laps[laps["clean"]]
+    if laps.empty:
+        return pd.DataFrame()
     rows = []
     for drv, g in laps.groupby("driver"):
         g = g.sort_values("lap_time")
@@ -26,6 +29,7 @@ def driver_stats(laps: pd.DataFrame, trim_pct: float = 0.10) -> pd.DataFrame:
                 "Écart-type": kept["lap_time"].std(),
                 "Conso / tour (L)": kept["fuel_used"].mean(),
                 "Conso max (L)": g["fuel_used"].quantile(0.9),
+                "Tours avec conso": int(g["fuel_used"].notna().sum()),
             }
         )
     return pd.DataFrame(rows).sort_values("Rythme moyen").reset_index(drop=True)

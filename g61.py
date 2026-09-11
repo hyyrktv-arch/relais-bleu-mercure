@@ -164,6 +164,7 @@ def load_laps(path: str = DB_PATH) -> pd.DataFrame:
         with sqlite3.connect(path) as con:
             df = pd.read_sql("SELECT * FROM laps", con)
         df["start_time"] = pd.to_datetime(df["start_time"], errors="coerce", utc=True)
+        df["clean"] = df["clean"].fillna(1).astype(int).astype(bool)
         return df
     except Exception:
         return pd.DataFrame()
