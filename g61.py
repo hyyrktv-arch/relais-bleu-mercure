@@ -72,8 +72,9 @@ class G61Client:
     ) -> pd.DataFrame:
         """Tous les tours (group=none) de l'équipe, paginés."""
         rows: list[dict] = []
+        seen: set = set()
         offset = 0
-        while True:
+        for _page in range(15):  # 15 pages max = 1500 tours
             data = self._get(
                 "laps",
                 teams=team_slug,
@@ -88,8 +89,10 @@ class G61Client:
                 offset=offset,
             )
             items = data.get("items", [])
-            rows.extend(items)
-            if len(items) < limit:
+            fresh = [it for it in items if str(it.get("id")) not in seen]
+            seen.update(str(it.get("id")) for it in items)
+            rows.extend(fresh)
+            if len(items) < limit or not fresh:
                 break
             offset += limit
             time.sleep(1.5)  # ménage la limite de débit
@@ -106,7 +109,11 @@ def _catalog(items: list[dict]) -> pd.DataFrame:
             name = f"{name} — {variant}"
         rows.append({"id": it.get("id"), "name": name})
     df = pd.DataFrame(rows)
-    return df.sort_values("name").reset_index(drop=True) if not df.empty else df
+    if df.empty:
+        return df
+    dup = df["name"].duplicated(keep=False)
+    df.loc[dup, "name"] = df.loc[dup, "name"] + " (#" + df.loc[dup, "id"].astype(str) + ")"
+    return df.sort_values("name").reset_index(drop=True)
 
 
 def _pick(d: dict, *keys, default=None):
