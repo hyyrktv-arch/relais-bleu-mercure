@@ -121,7 +121,15 @@ with st.sidebar:
                 st.error(f"{f.name} : {e}")
         st.success(f"{total_new} nouveaux tours enregistrés")
 
-laps = g61.demo_laps() if demo else store.load_laps()
+if demo:
+    laps = g61.demo_laps()
+else:
+    try:
+        laps = store.load_laps()
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Lecture de la base impossible — {e}")
+        st.info("Vérifie SUPABASE_URL (https://xxxxx.supabase.co, sans /rest/v1) et SUPABASE_SERVICE_KEY (Secret key complète).")
+        st.stop()
 
 if laps.empty:
     st.info("Aucun tour en base. Importe depuis Garage 61 ou active le mode démo.")
