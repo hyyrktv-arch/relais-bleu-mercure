@@ -73,7 +73,11 @@ class SupabaseStore:
     """Accès direct à l'API REST PostgREST de Supabase (pas de SDK, juste requests)."""
 
     def __init__(self, url: str, key: str, team_code: str):
-        self.base = url.rstrip("/") + "/rest/v1/"
+        url = url.strip().rstrip("/")
+        for suffix in ("/rest/v1", "/rest"):
+            if url.endswith(suffix):
+                url = url[: -len(suffix)]
+        self.base = url + "/rest/v1/"
         self.team = team_code
         # Nouvelles clés Supabase (sb_secret_… / sb_publishable_…) : en-tête apikey seul.
         # Anciennes clés JWT (eyJ…) : apikey + Authorization Bearer.
