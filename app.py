@@ -70,11 +70,12 @@ with st.sidebar:
             except Exception as e:  # noqa: BLE001
                 st.error(f"Catalogue indisponible : {e}")
 
-        track_name = st.selectbox("Circuit à importer", tracks_df["name"].tolist() if not tracks_df.empty else [],
-                                  index=None, placeholder="Choisir un circuit")
-        car_names = st.multiselect("Voitures (vide = toutes)", cars_df["name"].tolist() if not cars_df.empty else [])
-        track_ids = tracks_df.loc[tracks_df["name"] == track_name, "id"].tolist() if track_name else []
-        car_ids = cars_df.loc[cars_df["name"].isin(car_names), "id"].tolist() or None
+        track_opts = tracks_df["name"].tolist() if ("name" in tracks_df.columns) else []
+        car_opts = cars_df["name"].tolist() if ("name" in cars_df.columns) else []
+        track_name = st.selectbox("Circuit à importer", track_opts, index=None, placeholder="Choisir un circuit")
+        car_names = st.multiselect("Voitures (vide = toutes)", car_opts)
+        track_ids = tracks_df.loc[tracks_df["name"] == track_name, "id"].tolist() if (track_name and track_opts) else []
+        car_ids = (cars_df.loc[cars_df["name"].isin(car_names), "id"].tolist() or None) if car_opts else None
 
         if st.button("Tester la connexion", disabled=not token):
             try:
