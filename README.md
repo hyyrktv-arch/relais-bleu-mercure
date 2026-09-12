@@ -33,14 +33,29 @@ Le token ne voit que tes tours et ceux de tes coéquipiers Garage 61 : il faut q
 3. Dans *Advanced settings > Secrets*, coller le contenu de `secrets.toml`.
 4. Partager l'URL et le mot de passe équipe aux pilotes.
 
-La base SQLite est éphémère sur Streamlit Cloud (perdue au redéploiement). Si ça gêne, remplacer `save_laps` / `load_laps` dans `g61.py` par une connexion Supabase (Postgres gratuit) : une dizaine de lignes.
+La base SQLite est éphémère sur Streamlit Cloud ; configurer Supabase (section ci-dessous) pour la persistance.
+
+## Stockage persistant (Supabase)
+
+Sans configuration, la base est un SQLite éphémère (effacé à chaque redéploiement). Pour conserver les tours :
+1. Créer un projet sur supabase.com, coller `supabase_schema.sql` dans SQL Editor et l'exécuter.
+2. Project Settings > API : copier l'URL du projet et la clé `service_role`.
+3. Ajouter dans les Secrets Streamlit : `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `TEAM_CODE`.
+
+## Import de télémétrie iRacing (.ibt) — sans Garage 61
+
+iRacing enregistre la télémétrie dans `Documents/iRacing/telemetry` (Options > Misc, ou Alt+L en session).
+Glisser les fichiers dans la barre latérale : pilote, voiture, circuit, session, temps et carburant sont extraits.
 
 ## Structure
 
 ```
 app.py      interface Streamlit (3 onglets : Pilotes, Plan de relais, Tours bruts)
 g61.py      client API Garage 61, normalisation des tours, cache SQLite, données démo
-stints.py   statistiques pilotes et moteur de génération des relais
+stints.py   statistiques pilotes, moteur de relais (séquences éditables, carburant équilibré, départ imposé)
+storage.py  couche de stockage : Supabase si configuré, sinon SQLite
+ibt_import.py  lecture des fichiers de télémétrie iRacing (.ibt)
+supabase_schema.sql  tables Supabase (équipes, tours, live)
 ```
 
 ## À vérifier au premier import

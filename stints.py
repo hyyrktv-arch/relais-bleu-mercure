@@ -195,12 +195,17 @@ def suggest_sequence(stats: pd.DataFrame, p: RaceParams, drivers: list[str],
         return build(first or p.tank_l)
     per = (total_fuel - (first or 0)) / rest + p.fuel_margin_l
     seq = build(per)
-    # ajuste le carburant des relais libres pour couvrir exactement la course
-    for _ in range(8):
+    # ajuste le carburant des relais libres : couvrir la course, avec au plus ~1 tour de rab
+    for _ in range(20):
         _, cov = plan_from_sequence(stats, p, seq)
-        gap = cov.get("manque_s", 0) - cov.get("trop_s", 0)
-        if abs(gap) < pace:
+        manque, trop = cov.get("manque_s", 0), cov.get("trop_s", 0)
+        if manque == 0 and trop <= pace:
             break
-        per = max(p.fuel_margin_l + 1, per + (gap / pace) * cons / rest)
+        if manque > 0:
+            if per >= p.tank_l:
+                break  # réservoir plein partout : il faut un relais de plus
+            per = min(p.tank_l, per + max(cons / rest, (manque / pace) * cons / rest))
+        else:
+            per = max(p.fuel_margin_l + 1, per - ((trop - pace) / pace) * cons / rest)
         seq = build(per)
     return [(d, round(f, 1)) for d, f in seq]

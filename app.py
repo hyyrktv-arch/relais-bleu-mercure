@@ -6,6 +6,7 @@ import plotly.express as px
 import streamlit as st
 
 import g61
+from storage import get_store
 from stints import RaceParams, driver_stats, plan_from_sequence, suggest_sequence
 
 st.set_page_config(page_title="Relais Bleu Mercure", page_icon="🏁", layout="wide")
@@ -20,6 +21,7 @@ if pw and not st.session_state.get("auth"):
     st.stop()
 
 st.title("Relais Bleu Mercure")
+store = get_store(st.secrets)
 
 # --- barre latérale : source de données ----------------------------------
 with st.sidebar:
@@ -63,8 +65,9 @@ with st.sidebar:
             except Exception as e:  # noqa: BLE001
                 st.error(f"Erreur réseau : {e}")
 
-        if st.button("Vider la base locale"):
-            g61.clear_laps()
+        st.caption(f"Stockage : {store.label}")
+        if st.button("Vider la base"):
+            store.clear_laps()
             st.success("Base vidée")
             st.rerun()
 
@@ -77,7 +80,7 @@ with st.sidebar:
                     df, nxt, note = g61.G61Client(token, log=st.write).laps(
                         team_slug=team_slug, tracks=track_ids, cars=car_ids, age_days=age,
                         session_types=sess_ids, start_offset=resume_from)
-                    n = g61.save_laps(df)
+                    n = store.save_laps(df)
                     if nxt is None:
                         st.session_state.pop(resume_key, None)
                         status.update(label=f"Import terminé : {n} nouveaux tours", state="complete", expanded=False)
@@ -92,7 +95,33 @@ with st.sidebar:
                     status.update(label="Import impossible", state="error")
                     st.error(str(e))
 
-laps = g61.demo_laps() if demo else g61.load_laps()
+    st.divider()
+    st.subheader("Télémétrie iRacing (.ibt)")
+    st.caption("Fichiers dans Documents/iRacing/telemetry sur le PC du pilote. Fonctionne sans Garage 61.")
+    ibt_files = st.file_uploader("Déposer un ou plusieurs .ibt", type=["ibt"], accept_multiple_files=True,
+                                 disabled=demo, label_visibility="collapsed")
+    if ibt_files and st.button("Importer la télémétrie", type="primary"):
+        import tempfile
+        from ibt_import import read_ibt
+        total_new = 0
+        for f in ibt_files:
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".ibt", delete=False) as tmp:
+                    tmp.write(f.getbuffer())
+                    tmp_path = tmp.name
+                df = read_ibt(tmp_path, source_name=f.name)
+                n = store.save_laps(df)
+                total_new += n
+                if df.empty:
+                    st.warning(f"{f.name} : aucun tour complet trouvé")
+                else:
+                    st.write(f"{f.name} : {len(df)} tours ({df['driver'].iloc[0]}, {df['car'].iloc[0]}, "
+                             f"{df['track'].iloc[0]}), {n} nouveaux")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"{f.name} : {e}")
+        st.success(f"{total_new} nouveaux tours enregistrés")
+
+laps = g61.demo_laps() if demo else store.load_laps()
 
 if laps.empty:
     st.info("Aucun tour en base. Importe depuis Garage 61 ou active le mode démo.")
@@ -213,7 +242,9 @@ with tab_crews:
             plans[name] = plan
 
             if cov["manque_s"] > 0:
-                st.error(f"La séquence s'arrête {cov['manque_s'] / 60:.1f} min avant la fin de course : ajoute un relais ou du carburant.")
+                full = all(f >= tank - 0.05 for _, f in new_seq)
+                hint = "ajoute un relais (tous les réservoirs sont déjà pleins)." if full else "ajoute du carburant ou un relais."
+                st.error(f"La séquence s'arrête {cov['manque_s'] / 60:.1f} min avant la fin de course : {hint}")
             elif cov["trop_s"] > 60:
                 st.info(f"Marge de {cov['trop_s'] / 60:.1f} min au-delà de la fin de course, le dernier relais sera raccourci.")
             else:
