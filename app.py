@@ -7,7 +7,7 @@ import streamlit as st
 
 import g61
 from storage import get_store
-from stints import RaceParams, driver_stats, plan_from_sequence, suggest_sequence
+from stints import RaceParams, apply_overrides, driver_stats, plan_from_sequence, suggest_sequence
 
 st.set_page_config(page_title="Relais Bleu Mercure", page_icon="🏁", layout="wide")
 
@@ -36,10 +36,12 @@ store = get_store(st.secrets)
 # --- barre latérale : source de données ----------------------------------
 with st.sidebar:
     st.header("Données")
-    token = st.secrets.get("G61_TOKEN")
+    g61_enabled = str(st.secrets.get("G61_ENABLED", "true")).lower() not in ("false", "0", "non", "no")
+    token = st.secrets.get("G61_TOKEN") if g61_enabled else None
     team_slug = st.secrets.get("G61_TEAM_SLUG")
+    has_store_config = bool(st.secrets.get("SUPABASE_URL"))
     if is_admin:
-        demo = st.toggle("Mode démo (sans Garage 61)", value=not token)
+        demo = st.toggle("Mode démo (données fictives)", value=not (token or has_store_config))
     else:
         demo = False
         st.caption(f"Connecté en pilote · Stockage : {store.label}")
@@ -173,82 +175,113 @@ tab_live, tab_stats, tab_plan, tab_crews, tab_laps = st.tabs(["En piste", "Pilot
 with tab_live:
     from stints import fmt_lap
     c_top1, c_top2 = st.columns([3, 1])
-    c_top1.caption("Pilotes dont l'agent envoie des données. Se rafraîchit à chaque clic ou toutes les 30 s si activé.")
-    auto = c_top2.toggle("Auto-rafraîchir", value=False, key="live_auto")
-    if auto:
-        st.markdown('<meta http-equiv="refresh" content="30">', unsafe_allow_html=True)
-    if st.button("Rafraîchir", key="live_refresh"):
-        st.rerun()
+    c_top1.caption("Pilotes dont l'agent envoie des données.")
+    auto = c_top2.toggle("Auto-rafraîchir (30 s)", value=True, key="live_auto")
 
-    live = pd.DataFrame() if demo else store.load_live()
-    recent = pd.DataFrame() if demo else store.load_recent_laps(hours=12)
-    now = pd.Timestamp.now(tz="UTC")
+    @st.fragment(run_every="30s" if auto else None)
+    def render_live():
+        if st.button("Rafraîchir maintenant", key="live_refresh"):
+            pass  # le clic relance le fragment
+        live = pd.DataFrame() if demo else store.load_live()
+        recent = pd.DataFrame() if demo else store.load_recent_laps(hours=12)
+        now = pd.Timestamp.now(tz="UTC")
 
-    if live.empty:
-        st.info("Aucun pilote en piste pour le moment. Les pilotes apparaissent ici dès que leur agent est lancé et qu'ils entrent en session.")
-    else:
-        live["age_s"] = (now - live["updated_at"]).dt.total_seconds()
-        live = live.sort_values("age_s")
-        for _, r in live.iterrows():
-            online = r["age_s"] < 60
-            status = "🟢 en session" if online else ("🟡 en pause" if r["age_s"] < 900 else "⚫ hors ligne")
-            since = f"il y a {int(r['age_s'])} s" if r["age_s"] < 120 else f"il y a {int(r['age_s'] // 60)} min"
-            with st.container(border=True):
-                h1, h2 = st.columns([3, 2])
-                h1.markdown(f"**{r['driver']}** — {status} · {since}")
-                h2.markdown(f"{r.get('car') or ''} · {r.get('track') or ''} · {r.get('session_type') or ''}")
-                m = st.columns(6)
-                m[0].metric("Tour", int(r["lap"]) if pd.notna(r.get("lap")) else "—")
-                m[1].metric("Carburant", f"{r['fuel_level']:.1f} L" if pd.notna(r.get("fuel_level")) else "—")
-                m[2].metric("Dernier tour", fmt_lap(r.get("last_lap_time")) if pd.notna(r.get("last_lap_time")) and r.get("last_lap_time", 0) > 0 else "—")
-                tr = r.get("time_remain")
-                m[3].metric("Temps restant", f"{int(tr // 3600):d}:{int(tr % 3600 // 60):02d}" if pd.notna(tr) and tr > 0 and tr < 1e6 else "—")
-                m[4].metric("Position", int(r["position"]) if pd.notna(r.get("position")) else "—")
-                m[5].metric("Incidents", int(r["incidents"]) if pd.notna(r.get("incidents")) else "—")
-                meteo = []
-                if pd.notna(r.get("track_temp")):
-                    meteo.append(f"piste {r['track_temp']:.0f}°C")
-                if pd.notna(r.get("air_temp")):
-                    meteo.append(f"air {r['air_temp']:.0f}°C")
-                if r.get("track_state"):
-                    meteo.append(str(r["track_state"]))
-                if r.get("on_pit_road"):
-                    meteo.append("aux stands")
-                if meteo:
-                    st.caption(" · ".join(meteo))
+        if live.empty:
+            st.info("Aucun pilote en piste pour le moment. Les pilotes apparaissent ici dès que leur agent est lancé et qu'ils entrent en session.")
+        else:
+            live["age_s"] = (now - live["updated_at"]).dt.total_seconds()
+            live = live.sort_values("age_s")
+            for _, r in live.iterrows():
+                online = r["age_s"] < 60
+                status = "🟢 en session" if online else ("🟡 en pause" if r["age_s"] < 900 else "⚫ hors ligne")
+                since = f"il y a {int(r['age_s'])} s" if r["age_s"] < 120 else f"il y a {int(r['age_s'] // 60)} min"
+                with st.container(border=True):
+                    h1, h2 = st.columns([3, 2])
+                    h1.markdown(f"**{r['driver']}** — {status} · {since}")
+                    h2.markdown(f"{r.get('car') or ''} · {r.get('track') or ''} · {r.get('session_type') or ''}")
+                    m = st.columns(6)
+                    m[0].metric("Tour", int(r["lap"]) if pd.notna(r.get("lap")) else "—")
+                    m[1].metric("Carburant", f"{r['fuel_level']:.1f} L" if pd.notna(r.get("fuel_level")) else "—")
+                    m[2].metric("Dernier tour", fmt_lap(r.get("last_lap_time")) if pd.notna(r.get("last_lap_time")) and r.get("last_lap_time", 0) > 0 else "—")
+                    tr = r.get("time_remain")
+                    m[3].metric("Temps restant", f"{int(tr // 3600):d}:{int(tr % 3600 // 60):02d}" if pd.notna(tr) and tr > 0 and tr < 1e6 else "—")
+                    m[4].metric("Position", int(r["position"]) if pd.notna(r.get("position")) else "—")
+                    m[5].metric("Incidents", int(r["incidents"]) if pd.notna(r.get("incidents")) else "—")
+                    meteo = []
+                    if pd.notna(r.get("track_temp")):
+                        meteo.append(f"piste {r['track_temp']:.0f}°C")
+                    if pd.notna(r.get("air_temp")):
+                        meteo.append(f"air {r['air_temp']:.0f}°C")
+                    if r.get("track_state"):
+                        meteo.append(str(r["track_state"]))
+                    if r.get("on_pit_road"):
+                        meteo.append("aux stands")
+                    if meteo:
+                        st.caption(" · ".join(meteo))
 
-                mine = recent[recent["driver"] == r["driver"]].sort_values("start_time", ascending=False).head(12) if not recent.empty else pd.DataFrame()
-                if not mine.empty:
-                    show = mine[["start_time", "session_type", "lap_time", "fuel_used", "clean"]].copy()
-                    show["Heure"] = show["start_time"].dt.tz_convert("Europe/Paris").dt.strftime("%H:%M")
-                    show["Temps"] = show["lap_time"].apply(fmt_lap)
-                    show["Conso (L)"] = show["fuel_used"].round(2)
-                    show["Propre"] = show["clean"].map({True: "✓", False: "✗"})
-                    st.dataframe(show[["Heure", "session_type", "Temps", "Conso (L)", "Propre"]].rename(columns={"session_type": "Session"}),
-                                 hide_index=True, use_container_width=True, height=min(38 * (len(show) + 1), 300))
-                    clean_laps = mine[mine["clean"]]
-                    if len(clean_laps) >= 3:
-                        st.caption(f"Sur ces {len(clean_laps)} tours propres : moyenne {fmt_lap(clean_laps['lap_time'].mean())}, "
-                                   f"conso {clean_laps['fuel_used'].mean():.2f} L/tour")
+                    mine = recent[recent["driver"] == r["driver"]].sort_values("start_time", ascending=False).head(12) if not recent.empty else pd.DataFrame()
+                    if not mine.empty:
+                        show = mine[["start_time", "session_type", "lap_time", "fuel_used", "clean"]].copy()
+                        show["Heure"] = show["start_time"].dt.tz_convert("Europe/Paris").dt.strftime("%H:%M")
+                        show["Temps"] = show["lap_time"].apply(fmt_lap)
+                        show["Conso (L)"] = show["fuel_used"].round(2)
+                        show["Propre"] = show["clean"].map({True: "✓", False: "✗"})
+                        st.dataframe(show[["Heure", "session_type", "Temps", "Conso (L)", "Propre"]].rename(columns={"session_type": "Session"}),
+                                     hide_index=True, use_container_width=True, height=min(38 * (len(show) + 1), 300))
+                        clean_laps = mine[mine["clean"]]
+                        if len(clean_laps) >= 3:
+                            st.caption(f"Sur ces {len(clean_laps)} tours propres : moyenne {fmt_lap(clean_laps['lap_time'].mean())}, "
+                                       f"conso {clean_laps['fuel_used'].mean():.2f} L/tour")
 
-    if not recent.empty:
-        st.divider()
-        st.subheader("Activité des 12 dernières heures")
-        act = recent.groupby("driver").agg(Tours=("lap_id", "count"), Propres=("clean", "sum"),
-                                           Dernier=("start_time", "max"), Voiture=("car", "last"), Circuit=("track", "last")).reset_index()
-        act["Dernier"] = act["Dernier"].dt.tz_convert("Europe/Paris").dt.strftime("%d/%m %H:%M")
-        act["Propres"] = act["Propres"].astype(int)
-        st.dataframe(act.rename(columns={"driver": "Pilote"}).sort_values("Dernier", ascending=False),
-                     hide_index=True, use_container_width=True)
+        if not recent.empty:
+            st.divider()
+            st.subheader("Activité des 12 dernières heures")
+            act = recent.groupby("driver").agg(Tours=("lap_id", "count"), Propres=("clean", "sum"),
+                                               Dernier=("start_time", "max"), Voiture=("car", "last"), Circuit=("track", "last")).reset_index()
+            act["Dernier"] = act["Dernier"].dt.tz_convert("Europe/Paris").dt.strftime("%d/%m %H:%M")
+            act["Propres"] = act["Propres"].astype(int)
+            st.dataframe(act.rename(columns={"driver": "Pilote"}).sort_values("Dernier", ascending=False),
+                         hide_index=True, use_container_width=True)
+
+    render_live()
 
 # --- onglet pilotes -----------------------------------------------------------
 with tab_stats:
     trim = st.slider("Tours lents écartés (%)", 0, 30, 10, help="Écarte les tours les plus lents (trafic, erreurs) du calcul du rythme.") / 100
-    stats = driver_stats(sel, trim)
+    measured = driver_stats(sel, trim)
+
+    with st.expander("Ajustements manuels (temps cible, conso, pilote sans données)", expanded=False):
+        st.caption("Laisse une case vide pour garder la valeur mesurée. Temps au format 2:11.650 ou 131.65. "
+                   "Un pilote absent des données peut être ajouté avec ses deux valeurs. Réglages locaux à ton navigateur.")
+        ov_key = f"overrides:{car}:{track}"
+        base_rows = [{"Pilote": p, "Temps cible": None, "Conso / tour (L)": None} for p in measured["Pilote"]] if not measured.empty else []
+        if ov_key not in st.session_state:
+            st.session_state[ov_key] = pd.DataFrame(base_rows, columns=["Pilote", "Temps cible", "Conso / tour (L)"])
+        else:
+            known = set(st.session_state[ov_key]["Pilote"])
+            extra = [r for r in base_rows if r["Pilote"] not in known]
+            if extra:
+                st.session_state[ov_key] = pd.concat([st.session_state[ov_key], pd.DataFrame(extra)], ignore_index=True)
+        edited_ov = st.data_editor(
+            st.session_state[ov_key], num_rows="dynamic", hide_index=True, use_container_width=True, key=f"oved_{ov_key}",
+            column_config={
+                "Pilote": st.column_config.TextColumn(required=True),
+                "Temps cible": st.column_config.TextColumn(help="ex : 2:12.000"),
+                "Conso / tour (L)": st.column_config.NumberColumn(min_value=0.0, max_value=20.0, step=0.01, format="%.2f"),
+            },
+        )
+        st.session_state[ov_key] = edited_ov
+        if st.button("Réinitialiser les ajustements", key=f"ovreset_{ov_key}"):
+            st.session_state.pop(ov_key, None)
+            st.rerun()
+
+    stats = apply_overrides(measured, st.session_state.get(ov_key))
     if stats.empty:
-        st.warning("Pas assez de tours propres pour cette sélection.")
+        st.warning("Pas assez de tours propres pour cette sélection, et aucun pilote manuel saisi.")
     else:
-        show = stats[["Pilote", "Temps cible", "Tours", "Meilleur", "Rythme moyen", "Écart-type",
+        if "Source" not in stats.columns:
+            stats["Source"] = "Mesuré"
+        show = stats[["Pilote", "Source", "Temps cible", "Tours", "Meilleur", "Rythme moyen", "Écart-type",
                       "Conso / tour (L)", "Conso max (L)", "Tours avec conso"]]
         st.dataframe(
             show.style.format({"Meilleur": "{:.3f}", "Rythme moyen": "{:.3f}", "Écart-type": "{:.3f}",

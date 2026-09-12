@@ -103,6 +103,61 @@ def plan_stints(stats: pd.DataFrame, p: RaceParams) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def parse_lap(text) -> float | None:
+    """'2:11.650' ou '131.65' -> secondes. None si vide/invalide."""
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        return None
+    t = str(text).strip().replace(",", ".")
+    if not t:
+        return None
+    try:
+        if ":" in t:
+            m, sec = t.split(":", 1)
+            return int(m) * 60 + float(sec)
+        return float(t)
+    except ValueError:
+        return None
+
+
+def apply_overrides(stats: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
+    """Remplace rythme/conso par les valeurs saisies ; ajoute les pilotes manuels.
+
+    overrides : colonnes Pilote, Temps cible (texte), Conso / tour (L).
+    """
+    if overrides is None or overrides.empty:
+        return stats
+    out = stats.copy()
+    if "Source" not in out.columns:
+        out["Source"] = "Mesuré"
+    for _, r in overrides.iterrows():
+        name = str(r.get("Pilote") or "").strip()
+        if not name:
+            continue
+        pace = parse_lap(r.get("Temps cible"))
+        cons = r.get("Conso / tour (L)")
+        cons = None if cons is None or pd.isna(cons) or float(cons) <= 0 else float(cons)
+        if pace is None and cons is None:
+            continue
+        if name in out["Pilote"].values:
+            i = out.index[out["Pilote"] == name][0]
+            if pace:
+                out.loc[i, "Rythme moyen"] = pace
+                out.loc[i, "Temps cible"] = fmt_lap(pace)
+            if cons:
+                out.loc[i, "Conso / tour (L)"] = cons
+                out.loc[i, "Conso max (L)"] = max(cons, float(out.loc[i, "Conso max (L)"]) if pd.notna(out.loc[i, "Conso max (L)"]) else cons)
+            out.loc[i, "Source"] = "Ajusté"
+        else:
+            if not (pace and cons):
+                continue  # un pilote manuel a besoin des deux valeurs
+            out = pd.concat([out, pd.DataFrame([{
+                "Pilote": name, "Tours": 0, "Meilleur": pace, "Rythme moyen": pace, "Écart-type": None,
+                "Conso / tour (L)": cons, "Conso max (L)": cons, "Tours avec conso": 0,
+                "Temps cible": fmt_lap(pace), "Source": "Manuel",
+            }])], ignore_index=True)
+    return out.sort_values("Rythme moyen").reset_index(drop=True)
+
+
 def fmt_lap(seconds: float) -> str:
     """128.743 -> 2:08.743"""
     if seconds is None or pd.isna(seconds):
