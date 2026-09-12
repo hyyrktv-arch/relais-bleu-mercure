@@ -75,7 +75,11 @@ class SupabaseStore:
     def __init__(self, url: str, key: str, team_code: str):
         self.base = url.rstrip("/") + "/rest/v1/"
         self.team = team_code
-        self.h = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        # Nouvelles clés Supabase (sb_secret_… / sb_publishable_…) : en-tête apikey seul.
+        # Anciennes clés JWT (eyJ…) : apikey + Authorization Bearer.
+        self.h = {"apikey": key, "Content-Type": "application/json"}
+        if key.startswith("eyJ"):
+            self.h["Authorization"] = f"Bearer {key}"
         self.label = f"Supabase · équipe {team_code}"
 
     def _rows(self, df: pd.DataFrame) -> list[dict]:
