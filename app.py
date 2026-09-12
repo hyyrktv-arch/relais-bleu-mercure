@@ -142,7 +142,79 @@ track = c2.selectbox("Circuit", sorted(laps.loc[laps["car"] == car, "track"].dro
 sessions = c3.multiselect("Type de session", sorted(laps["session_type"].unique()), default=sorted(laps["session_type"].unique()))
 sel = laps[(laps["car"] == car) & (laps["track"] == track) & laps["session_type"].isin(sessions)]
 
-tab_stats, tab_plan, tab_crews, tab_laps = st.tabs(["Pilotes", "Paramètres course", "Équipages", "Tours bruts"])
+tab_live, tab_stats, tab_plan, tab_crews, tab_laps = st.tabs(["En piste", "Pilotes", "Paramètres course", "Équipages", "Tours bruts"])
+
+# --- onglet en piste ---------------------------------------------------------------
+with tab_live:
+    from stints import fmt_lap
+    c_top1, c_top2 = st.columns([3, 1])
+    c_top1.caption("Pilotes dont l'agent envoie des données. Se rafraîchit à chaque clic ou toutes les 30 s si activé.")
+    auto = c_top2.toggle("Auto-rafraîchir", value=False, key="live_auto")
+    if auto:
+        st.markdown('<meta http-equiv="refresh" content="30">', unsafe_allow_html=True)
+    if st.button("Rafraîchir", key="live_refresh"):
+        st.rerun()
+
+    live = pd.DataFrame() if demo else store.load_live()
+    recent = pd.DataFrame() if demo else store.load_recent_laps(hours=12)
+    now = pd.Timestamp.now(tz="UTC")
+
+    if live.empty:
+        st.info("Aucun pilote en piste pour le moment. Les pilotes apparaissent ici dès que leur agent est lancé et qu'ils entrent en session.")
+    else:
+        live["age_s"] = (now - live["updated_at"]).dt.total_seconds()
+        live = live.sort_values("age_s")
+        for _, r in live.iterrows():
+            online = r["age_s"] < 60
+            status = "🟢 en session" if online else ("🟡 en pause" if r["age_s"] < 900 else "⚫ hors ligne")
+            since = f"il y a {int(r['age_s'])} s" if r["age_s"] < 120 else f"il y a {int(r['age_s'] // 60)} min"
+            with st.container(border=True):
+                h1, h2 = st.columns([3, 2])
+                h1.markdown(f"**{r['driver']}** — {status} · {since}")
+                h2.markdown(f"{r.get('car') or ''} · {r.get('track') or ''} · {r.get('session_type') or ''}")
+                m = st.columns(6)
+                m[0].metric("Tour", int(r["lap"]) if pd.notna(r.get("lap")) else "—")
+                m[1].metric("Carburant", f"{r['fuel_level']:.1f} L" if pd.notna(r.get("fuel_level")) else "—")
+                m[2].metric("Dernier tour", fmt_lap(r.get("last_lap_time")) if pd.notna(r.get("last_lap_time")) and r.get("last_lap_time", 0) > 0 else "—")
+                tr = r.get("time_remain")
+                m[3].metric("Temps restant", f"{int(tr // 3600):d}:{int(tr % 3600 // 60):02d}" if pd.notna(tr) and tr > 0 and tr < 1e6 else "—")
+                m[4].metric("Position", int(r["position"]) if pd.notna(r.get("position")) else "—")
+                m[5].metric("Incidents", int(r["incidents"]) if pd.notna(r.get("incidents")) else "—")
+                meteo = []
+                if pd.notna(r.get("track_temp")):
+                    meteo.append(f"piste {r['track_temp']:.0f}°C")
+                if pd.notna(r.get("air_temp")):
+                    meteo.append(f"air {r['air_temp']:.0f}°C")
+                if r.get("track_state"):
+                    meteo.append(str(r["track_state"]))
+                if r.get("on_pit_road"):
+                    meteo.append("aux stands")
+                if meteo:
+                    st.caption(" · ".join(meteo))
+
+                mine = recent[recent["driver"] == r["driver"]].sort_values("start_time", ascending=False).head(12) if not recent.empty else pd.DataFrame()
+                if not mine.empty:
+                    show = mine[["start_time", "session_type", "lap_time", "fuel_used", "clean"]].copy()
+                    show["Heure"] = show["start_time"].dt.tz_convert("Europe/Paris").dt.strftime("%H:%M")
+                    show["Temps"] = show["lap_time"].apply(fmt_lap)
+                    show["Conso (L)"] = show["fuel_used"].round(2)
+                    show["Propre"] = show["clean"].map({True: "✓", False: "✗"})
+                    st.dataframe(show[["Heure", "session_type", "Temps", "Conso (L)", "Propre"]].rename(columns={"session_type": "Session"}),
+                                 hide_index=True, use_container_width=True, height=min(38 * (len(show) + 1), 300))
+                    clean_laps = mine[mine["clean"]]
+                    if len(clean_laps) >= 3:
+                        st.caption(f"Sur ces {len(clean_laps)} tours propres : moyenne {fmt_lap(clean_laps['lap_time'].mean())}, "
+                                   f"conso {clean_laps['fuel_used'].mean():.2f} L/tour")
+
+    if not recent.empty:
+        st.divider()
+        st.subheader("Activité des 12 dernières heures")
+        act = recent.groupby("driver").agg(Tours=("lap_id", "count"), Propres=("clean", "sum"),
+                                           Dernier=("start_time", "max"), Voiture=("car", "last"), Circuit=("track", "last")).reset_index()
+        act["Dernier"] = act["Dernier"].dt.tz_convert("Europe/Paris").dt.strftime("%d/%m %H:%M")
+        act["Propres"] = act["Propres"].astype(int)
+        st.dataframe(act.rename(columns={"driver": "Pilote"}).sort_values("Dernier", ascending=False),
+                     hide_index=True, use_container_width=True)
 
 # --- onglet pilotes -----------------------------------------------------------
 with tab_stats:
@@ -282,7 +354,7 @@ with tab_crews:
 
 # --- onglet tours bruts -------------------------------------------------------
 with tab_laps:
-    cols = [c for c in sel.columns if c not in ("raw", "imported_at")]
+    cols = [c for c in sel.columns if c not in ("raw", "imported_at", "team_code")]
     st.dataframe(sel[cols].sort_values("start_time", ascending=False), hide_index=True, use_container_width=True)
     if "raw" in sel.columns and not sel.empty:
         with st.expander("Structure brute renvoyée par Garage 61 (1er tour)"):

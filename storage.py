@@ -10,6 +10,7 @@ import requests
 
 LAP_COLS = ["lap_id", "driver", "car", "track", "session_type", "lap_time", "fuel_used",
             "fuel_level", "clean", "start_time", "raw"]
+EXTRA_COLS = ["air_temp", "track_temp", "track_state", "position"]  # écrits par l'agent
 
 
 def _prep(df: pd.DataFrame) -> pd.DataFrame:
@@ -65,6 +66,12 @@ class SqliteStore:
 
     def load_live(self) -> pd.DataFrame:
         return pd.DataFrame()
+
+    def load_recent_laps(self, hours: int = 12) -> pd.DataFrame:
+        df = self.load_laps()
+        if df.empty:
+            return df
+        return df[df["start_time"] >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=hours)]
 
     label = "SQLite local (éphémère)"
 
@@ -146,8 +153,22 @@ class SupabaseStore:
             raise RuntimeError(f"Supabase {r.status_code} : {r.text[:300]}")
 
     def load_live(self) -> pd.DataFrame:
-        r = requests.get(self.base + f"live?team_code=eq.{self.team}&select=*", headers=self.h, timeout=15)
-        return pd.DataFrame(r.json()) if r.ok else pd.DataFrame()
+        r = requests.get(self.base + f"live?team_code=eq.{self.team}&select=*&order=updated_at.desc",
+                         headers=self.h, timeout=15)
+        df = pd.DataFrame(r.json()) if r.ok else pd.DataFrame()
+        if not df.empty:
+            df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce", utc=True)
+        return df
+
+    def load_recent_laps(self, hours: int = 12) -> pd.DataFrame:
+        since = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=hours)).isoformat()
+        r = requests.get(self.base + f"laps?team_code=eq.{self.team}&start_time=gte.{since}&select=*&order=start_time.desc",
+                         headers={**self.h, "Range": "0-1999"}, timeout=30)
+        df = pd.DataFrame(r.json()) if r.ok else pd.DataFrame()
+        if df.empty:
+            return df
+        df["raw"] = df["raw"].apply(lambda v: json.dumps(v) if isinstance(v, dict) else v)
+        return _post(df)
 
 
 def get_store(secrets) -> SqliteStore | SupabaseStore:
