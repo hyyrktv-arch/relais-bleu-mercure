@@ -1,3 +1,4 @@
+
 """Moteur de calcul des relais."""
 from __future__ import annotations
 
