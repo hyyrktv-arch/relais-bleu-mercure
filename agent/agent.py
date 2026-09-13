@@ -1,4 +1,3 @@
-
 """Agent Relais Bleu Mercure — envoie la télémétrie iRacing du pilote vers l'équipe.
 
 Fonctionnement : lit la mémoire partagée iRacing (pyirsdk), détecte chaque tour bouclé,
@@ -72,6 +71,15 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+KNOWN_TEAMS = {"bleumercure": "bleu-mercure", "bleu_mercure": "bleu-mercure", "bleu mercure": "bleu-mercure",
+               "bleu-mercure-racing": "bleu-mercure", "bleumercureracing": "bleu-mercure"}
+
+
+def normalize_team(code: str) -> str:
+    c = (code or "").strip().lower().replace(" ", "-").replace("_", "-")
+    return KNOWN_TEAMS.get(c.replace("-", ""), KNOWN_TEAMS.get(c, c))
+
+
 # --- configuration -------------------------------------------------------------------------
 def load_config() -> dict:
     cfg = {"team_code": "", "supabase_url": DEFAULT_SUPABASE_URL, "publishable_key": DEFAULT_PUBLISHABLE_KEY,
@@ -83,10 +91,10 @@ def load_config() -> dict:
             if k in ("supabase_url", "publishable_key") and (not v or "REMPLACER" in v):
                 continue
             cfg[k] = v
-    cfg["team_code"] = cfg["team_code"].strip().lower().replace(" ", "-")
+    cfg["team_code"] = normalize_team(cfg["team_code"])
     if not cfg["team_code"]:
         print("\n=== Agent Relais Bleu Mercure — première configuration ===")
-        cfg["team_code"] = input("Code équipe (ex : bleu-mercure) : ").strip().lower().replace(" ", "-")
+        cfg["team_code"] = normalize_team(input("Code équipe (ex : bleu-mercure) : "))
         CONFIG_PATH.write_text(json.dumps({"team_code": cfg["team_code"], "driver_name_override": ""},
                                           indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Configuration enregistrée dans {CONFIG_PATH}")
@@ -102,7 +110,7 @@ def _startup_dir() -> Path:
     return Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
-def install_startup() -> None:
+def install_startup(quiet: bool = False) -> None:
     """Crée un raccourci (fenêtre réduite) dans le dossier Démarrage de Windows."""
     try:
         target = Path(sys.executable) if getattr(sys, "frozen", False) else Path(__file__).resolve()
@@ -121,9 +129,11 @@ l.Save'''
         tmp.write_text(vbs, encoding="utf-8")
         os.system(f'cscript //nologo "{tmp}"')
         tmp.unlink(missing_ok=True)
-        print(f"Démarrage automatique activé ({lnk.name}). Pour le retirer : supprimer ce raccourci dans shell:startup.")
+        if not quiet:
+            print(f"Démarrage automatique activé ({lnk.name}). Pour le retirer : supprimer ce raccourci dans shell:startup.")
     except Exception as e:  # noqa: BLE001
-        print(f"Impossible de créer le raccourci de démarrage : {e}")
+        if not quiet:
+            print(f"Impossible de créer le raccourci de démarrage : {e}")
 
 
 def uninstall_startup() -> None:
@@ -168,12 +178,21 @@ class Sender:
         while self.queue:
             row = self.queue[0]
             try:
-                r = requests.post(self.base + "laps", headers={**self.h, "Prefer": "resolution=ignore-duplicates,return=minimal"},
+                r = requests.post(self.base + "laps", headers={**self.h, "Prefer": "return=minimal"},
                                   json=row, timeout=10)
-                if r.ok or r.status_code == 409:
+                if r.ok:
                     self.queue.popleft()
                     continue
-                log(f"Supabase {r.status_code} : {r.text[:200]}")
+                body = r.text or ""
+                if r.status_code == 409 and "23505" in body:      # doublon : déjà en base
+                    self.queue.popleft()
+                    continue
+                if "23503" in body or "foreign key" in body.lower():  # équipe inconnue
+                    log(f"ERREUR : le code équipe « {row.get('team_code')} » n'existe pas. "
+                        f"Corrige agent_config.json (ex : bleu-mercure) puis relance. Tours conservés.")
+                    self.next_retry = time.time() + 60
+                    break
+                log(f"Supabase {r.status_code} : {body[:200]}")
                 self.next_retry = time.time() + 30
                 break
             except requests.RequestException as e:
@@ -337,9 +356,12 @@ def main() -> None:
         return
 
     cfg = load_config()
+    # Si un raccourci de démarrage existe, on le recrée vers l'emplacement actuel (au cas où l'exe a bougé)
+    if os.name == "nt" and getattr(sys, "frozen", False) and (_startup_dir() / "RelaisBleuMercureAgent.lnk").exists():
+        install_startup(quiet=True)
     sender = Sender(cfg["supabase_url"], cfg["publishable_key"])
     tracker = LapTracker(cfg, sender)
-    log(f"Agent v1.2 démarré — équipe {cfg['team_code']}")
+    log(f"Agent v1.4 démarré — équipe {cfg['team_code']}")
     log(f"Envoi vers {sender.base} (clé {cfg['publishable_key'][:15]}…) — config : {CONFIG_PATH}")
     if "REMPLACER" in sender.base or "REMPLACER" in cfg["publishable_key"]:
         log("ATTENTION : URL ou clé Supabase non renseignées (valeur REMPLACER). Rien ne sera envoyé.")
