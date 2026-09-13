@@ -1,4 +1,3 @@
-
 """Moteur de calcul des relais."""
 from __future__ import annotations
 
@@ -45,7 +44,7 @@ class RaceParams:
     duration_min: float = 360         # durée course en minutes
     tank_l: float = 100.0             # capacité réservoir
     pit_loss_s: float = 60.0          # temps perdu par arrêt (entrée+sortie+arrêt)
-    refuel_rate_lps: float = 3.0      # litres/seconde au ravitaillement
+    refuel_rate_lps: float | None = 3.0  # litres/seconde ; None = arrêt à durée fixe (pit_loss_s inclut tout)
     fuel_margin_l: float = 2.0        # réserve de sécurité en fin de relais
     max_stint_min: float | None = None  # limite règlementaire (ex : 120 min) ou None
     start_fuel_l: float | None = None   # carburant imposé au départ (ex : plein obligatoire) ou None
@@ -80,7 +79,7 @@ def plan_stints(stats: pd.DataFrame, p: RaceParams) -> pd.DataFrame:
         stint_s = n * pace
         fuel_needed = n * cons + p.fuel_margin_l
         last = t + stint_s >= total_s
-        pit = 0.0 if last else p.pit_loss_s + fuel_needed / p.refuel_rate_lps
+        pit = 0.0 if last else p.pit_loss_s + (fuel_needed / p.refuel_rate_lps if p.refuel_rate_lps else 0.0)
 
         rows.append(
             {
@@ -197,7 +196,7 @@ def plan_from_sequence(stats: pd.DataFrame, p: RaceParams, sequence: list[tuple[
         n = max(0, min(laps_fuel, laps_time, laps_left))
         stint_s = n * pace
         last = (i == len(sequence) - 1) or (t + stint_s >= total_s)
-        pit = 0.0 if last else p.pit_loss_s + (sequence[i + 1][1] / p.refuel_rate_lps)
+        pit = 0.0 if last else p.pit_loss_s + ((sequence[i + 1][1] / p.refuel_rate_lps) if p.refuel_rate_lps else 0.0)
         limite = "Fin de course" if t + stint_s >= total_s else ("Temps max" if n == laps_time and laps_time < laps_fuel else "Carburant")
         rows.append({
             "Relais": i + 1, "Pilote": drv, "Temps cible": fmt_lap(pace), "Conso cible (L)": round(cons, 2),

@@ -317,12 +317,23 @@ with tab_plan:
         st.warning("Calcule d'abord les statistiques pilotes.")
     else:
         st.caption("Paramètres communs à toutes les voitures engagées. Le plan de chaque voiture est dans l'onglet Équipages.")
-        a, b, c, d = st.columns(4)
+        a, b = st.columns(2)
         duration = a.number_input("Durée de course (min)", 30, 1500, 360, step=30)
         tank = b.number_input("Réservoir (L)", 20.0, 200.0, 100.0, step=1.0)
-        pit_loss = c.number_input("Perte par arrêt hors ravitaillement (s)", 10.0, 180.0, 60.0, step=5.0,
-                                  help="Entrée + sortie des stands + changement de pilote, sans le temps de remplissage.")
-        refuel = d.number_input("Débit ravitaillement (L/s)", 0.5, 10.0, 3.0, step=0.1)
+        pit_mode = st.radio("Temps d'arrêt", ["Durée fixe (règlement)", "Dépend du carburant ajouté"], horizontal=True,
+                            help="Durée fixe : chaque arrêt coûte le même temps quel que soit le carburant (ex : 120 s imposées). "
+                                 "Dépend du carburant : perte fixe + carburant ÷ débit de remplissage.")
+        c, d = st.columns(2)
+        if pit_mode.startswith("Durée fixe"):
+            pit_loss = c.number_input("Temps perdu par arrêt, tout compris (s)", 10.0, 400.0, 120.0, step=5.0,
+                                      help="Entrée + sortie des stands + arrêt + changement de pilote.")
+            refuel = None
+            d.caption("Le carburant ajouté ne change pas la durée de l'arrêt.")
+        else:
+            pit_loss = c.number_input("Perte par arrêt hors ravitaillement (s)", 10.0, 400.0, 60.0, step=5.0,
+                                      help="Entrée + sortie des stands + changement de pilote, sans le temps de remplissage.")
+            refuel = d.number_input("Débit ravitaillement (L/s)", 0.1, 20.0, 3.0, step=0.1,
+                                    help="Ex : 100 L en 40 s = 2,5 L/s. Un plein prend carburant ÷ débit.")
         e, f, g = st.columns(3)
         margin = e.number_input("Marge carburant par défaut (L)", 0.0, 10.0, 2.0, step=0.5)
         max_stint = f.number_input("Relais max par défaut (min, 0 = aucun)", 0, 300, 0, step=10,
