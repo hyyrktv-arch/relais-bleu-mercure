@@ -51,7 +51,21 @@ with st.sidebar:
             st.session_state.pop("role", None)
             st.rerun()
 
-    if is_admin and not demo:
+    if is_admin and not demo and not g61_enabled:
+        st.caption(f"Stockage : {store.label}")
+        st.caption("Source : agent iRacing. Garage 61 désactivé (G61_ENABLED = false).")
+        with st.expander("Zone sensible"):
+            confirm = st.checkbox("Je confirme vouloir effacer tous les tours de l'équipe", key="confirm_clear_nog61")
+            if st.button("Vider la base", disabled=not confirm, key="clear_nog61"):
+                store.clear_laps()
+                st.success("Base vidée")
+                st.rerun()
+        if st.button("Se déconnecter", key="logout_admin_nog61"):
+            st.session_state.pop("role", None)
+            st.rerun()
+
+    if is_admin and not demo and g61_enabled:
+        st.subheader("Garage 61 (historique)")
         if not token:
             st.error("Ajoute G61_TOKEN dans .streamlit/secrets.toml")
         age = st.number_input("Historique (jours)", 7, 365, 60)
