@@ -172,14 +172,72 @@ def pilots_section(sel: pd.DataFrame, key: str, show_chart: bool = True) -> pd.D
 
 
 # ---------------------------------------------------------------------------------------
+# Arrêts mesurés par l'agent
+# ---------------------------------------------------------------------------------------
+
+def pitstops_for_ctx(ctx: dict) -> pd.DataFrame:
+    try:
+        ps = store().load_pitstops()
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+    if ps.empty:
+        return ps
+    cars = [c for c in ps["car"].dropna().unique() if SEASON.norm(c) == SEASON.norm(ctx.get("car"))]
+    tracks = SEASON.match_track(ctx.get("track"), ps["track"].dropna().unique().tolist()) if ctx.get("track") else []
+    sub = ps[ps["car"].isin(cars)] if cars else ps.iloc[0:0]
+    sub = sub[sub["track"].isin(tracks)] if tracks else sub.iloc[0:0]
+    return sub
+
+
+def pit_summary(ps: pd.DataFrame) -> dict | None:
+    if ps.empty:
+        return None
+    good = ps[(ps["pitlane_s"] > 20) & (ps["pitlane_s"] < 400)]
+    if good.empty:
+        return None
+    refuels = good[good["refuel_rate"].notna() & (good["fuel_added"] > 5)]
+    return {
+        "n": int(len(good)),
+        "pitlane_s": float(good["pitlane_s"].median()),
+        "stationary_s": float(good["stationary_s"].median()) if good["stationary_s"].notna().any() else None,
+        "refuel_rate": float(refuels["refuel_rate"].median()) if not refuels.empty else None,
+        "last": good["entered_at"].max(),
+    }
+
+
+# ---------------------------------------------------------------------------------------
 # Section Réglages de course — renvoie dict de paramètres communs
 # ---------------------------------------------------------------------------------------
 
-def params_section(key: str, defaults: dict, stats: pd.DataFrame | None = None) -> dict:
+def params_section(key: str, defaults: dict, stats: pd.DataFrame | None = None, ctx: dict | None = None) -> dict:
     """defaults : duration_min, tank_l, pit_mode, pit_loss_s, refuel_rate_lps, fuel_margin_l, max_stint_min, start_fuel_l"""
     k = lambda n: f"{key}:{n}"  # noqa: E731
     for name, val in defaults.items():
         st.session_state.setdefault(k(name), val)
+
+    # arrêts mesurés par l'agent sur cette voiture / ce circuit
+    if ctx:
+        summ = pit_summary(pitstops_for_ctx(ctx))
+        if summ:
+            with st.container(border=True):
+                c1, c2 = st.columns([3, 1])
+                txt = f"**{summ['n']} arrêt(s) mesuré(s)** par l'agent ici : pit lane {summ['pitlane_s']:.0f} s"
+                if summ["stationary_s"]:
+                    txt += f", arrêt {summ['stationary_s']:.0f} s"
+                if summ["refuel_rate"]:
+                    txt += f", débit {summ['refuel_rate']:.2f} L/s"
+                c1.markdown(txt)
+                c1.caption("La pit lane inclut le temps d'arrêt. La perte réelle par rapport à un tour normal est un peu inférieure "
+                           "(la portion de pit lane remplace une partie du tour).")
+                if c2.button("Appliquer", key=k("apply_pits")):
+                    st.session_state[k("pit_loss_s")] = round(summ["pitlane_s"] - (summ["stationary_s"] or 0) + (summ["stationary_s"] or 0), 0) \
+                        if summ["refuel_rate"] is None else round(summ["pitlane_s"] - (summ["stationary_s"] or 0), 0) + 5.0
+                    if summ["refuel_rate"]:
+                        st.session_state[k("pit_mode")] = "Dépend du carburant ajouté"
+                        st.session_state[k("refuel_rate_lps")] = round(summ["refuel_rate"], 2)
+                    else:
+                        st.session_state[k("pit_mode")] = "Durée fixe (règlement)"
+                    st.rerun()
     a, b = st.columns(2)
     duration = a.number_input("Durée de course (min)", 30, 1500, step=30, key=k("duration_min"))
     tank = b.number_input("Réservoir (L)", 20.0, 250.0, step=1.0, key=k("tank_l"))
@@ -376,7 +434,7 @@ def race_workflow(laps: pd.DataFrame, ctx: dict, key: str, role: str, event_key:
                         pit_mode=rules.get("pit_mode", "Durée fixe (règlement)"), pit_loss_s=float(rules.get("pit_loss_s", 120.0)),
                         refuel_rate_lps=float(rules.get("refuel_rate_lps", 3.0)), fuel_margin_l=float(rules.get("fuel_margin_l", 2.0)),
                         max_stint_min=int(rules.get("max_stint_min", 0)), start_fuel_l=float(rules.get("start_fuel_l") or 0.0))
-        params = params_section(key, defaults, stats)
+        params = params_section(key, defaults, stats, ctx)
     with t_crews:
         saved = []
         if event_key:
@@ -386,3 +444,116 @@ def race_workflow(laps: pd.DataFrame, ctx: dict, key: str, role: str, event_key:
                 st.warning(f"Plans partagés indisponibles : {e}")
         crews_section(stats, params, key=f"{key}:crews", event_key=event_key, role=role, saved_plans=saved)
     return params
+
+
+# ---------------------------------------------------------------------------------------
+# Suivi en course : écart au plan (utilisé par la page En piste)
+# ---------------------------------------------------------------------------------------
+
+def race_tracking(ctx: dict, laps: pd.DataFrame, live: pd.DataFrame, recent: pd.DataFrame, role: str):
+    """Compare la course en cours (live + tours récents) au plan partagé de chaque voiture."""
+    if not ctx.get("start") or not ctx.get("event_key"):
+        return
+    start = pd.Timestamp(ctx["start"])
+    now = pd.Timestamp.now(tz="UTC")
+    elapsed = (now - start).total_seconds()
+    total = ctx.get("duration_min", 0) * 60
+    if elapsed < -3600 * 6 or elapsed > total + 1800:
+        return  # trop loin de la course
+    try:
+        plans = store().list_plans(ctx["event_key"])
+    except Exception:  # noqa: BLE001
+        plans = []
+    if not plans:
+        st.info("Aucun plan enregistré pour cette course : enregistre les équipages dans la page de la course pour suivre l'écart au plan.")
+        return
+
+    sel = select_laps_for_ctx(laps, ctx)
+    stats = driver_stats(sel) if not sel.empty else pd.DataFrame()
+    st.subheader(f"Suivi de course — {ctx.get('label')}")
+    if 0 <= elapsed <= total:
+        st.progress(min(1.0, elapsed / total), text=f"{int(elapsed // 60)} / {ctx['duration_min']} min écoulées")
+    elif elapsed < 0:
+        st.caption(f"Départ dans {int(-elapsed // 3600)} h {int(-elapsed % 3600 // 60)} min — le plan s'affiche, le suivi démarre au départ.")
+
+    for p in plans:
+        seq = [(a, float(b)) for a, b in p.get("sequence", [])]
+        pr = p.get("params", {})
+        rp = RaceParams(duration_min=ctx["duration_min"], tank_l=float(pr.get("tank_l", 100)), pit_loss_s=float(pr.get("pit_loss_s", 120)),
+                        refuel_rate_lps=pr.get("refuel_rate_lps"), fuel_margin_l=float(pr.get("fuel_margin_l", 2)),
+                        max_stint_min=pr.get("max_stint_min") or None, start_fuel_l=pr.get("start_fuel_l"), driver_order=p.get("drivers", []))
+        # stats pour les pilotes du plan (mesurées, ou fallback rythme/conso génériques)
+        st_ = stats.copy() if not stats.empty else pd.DataFrame()
+        missing = [d for d in dict.fromkeys(a for a, _ in seq) if st_.empty or d not in st_["Pilote"].values]
+        if missing:
+            base_pace = st_["Rythme moyen"].mean() if not st_.empty else 130.0
+            base_cons = st_["Conso / tour (L)"].mean() if not st_.empty else 3.5
+            st_ = pd.concat([st_, pd.DataFrame([{"Pilote": d, "Rythme moyen": base_pace, "Conso / tour (L)": base_cons, "Conso max (L)": base_cons,
+                                                  "Tours": 0, "Meilleur": base_pace, "Écart-type": None, "Tours avec conso": 0, "Temps cible": fmt_lap(base_pace)}
+                                                 for d in missing])], ignore_index=True)
+        plan, cov = plan_from_sequence(st_, rp, seq)
+        if plan.empty:
+            continue
+        with st.container(border=True):
+            st.markdown(f"### {p['car_name']}" + (" 🔒" if p.get("locked") else ""))
+            # relais prévu à l'instant t
+            def _sec(hms):
+                h, m, s_ = hms.split(":")
+                return int(h) * 3600 + int(m) * 60 + int(s_)
+            plan["_deb"] = plan["Début"].apply(_sec)
+            plan["_fin"] = plan["Fin"].apply(_sec)
+            cur = plan[(plan["_deb"] <= max(elapsed, 0)) & (plan["_fin"] >= max(elapsed, 0))]
+            cur = cur.iloc[0] if not cur.empty else (plan.iloc[0] if elapsed < 0 else plan.iloc[-1])
+            nxt_stops = plan[plan["_fin"] > elapsed]
+            # pilote réellement en piste (live) parmi les pilotes de ce plan
+            drivers_plan = list(dict.fromkeys(a for a, _ in seq))
+            lv = live[live["driver"].isin(drivers_plan)] if not live.empty else pd.DataFrame()
+            lv = lv.sort_values("updated_at", ascending=False) if not lv.empty else lv
+            actual = lv.iloc[0] if not lv.empty else None
+
+            c = st.columns(5)
+            c[0].metric("Relais prévu", f"{int(cur['Relais'])} / {len(plan)}", cur["Pilote"])
+            if actual is not None:
+                same = actual["driver"] == cur["Pilote"]
+                c[1].metric("Au volant", actual["driver"], "conforme" if same else "≠ plan", delta_color="normal" if same else "inverse")
+                c[2].metric("Carburant", f"{actual['fuel_level']:.1f} L" if pd.notna(actual.get("fuel_level")) else "—")
+            else:
+                c[1].metric("Au volant", "—", "pas de live")
+            # tours prévus à cet instant vs réels
+            laps_planned = None
+            if elapsed >= 0:
+                done_before = plan[plan["_fin"] < elapsed]["Tours"].sum()
+                pace_cur = float(st_.set_index("Pilote").loc[cur["Pilote"], "Rythme moyen"]) if cur["Pilote"] in st_["Pilote"].values else 130.0
+                in_stint = max(0, int((elapsed - cur["_deb"]) // pace_cur))
+                laps_planned = int(done_before + min(in_stint, cur["Tours"]))
+            if actual is not None and pd.notna(actual.get("lap")) and laps_planned is not None:
+                diff = int(actual["lap"]) - laps_planned
+                c[3].metric("Tours", f"{int(actual['lap'])} (prévu {laps_planned})", f"{diff:+d}", delta_color="normal" if diff >= 0 else "inverse")
+            # conso réelle vs cible sur les derniers tours du pilote au volant
+            if actual is not None and not recent.empty:
+                mine = recent[(recent["driver"] == actual["driver"]) & recent["clean"].astype(bool)].sort_values("start_time", ascending=False).head(5)
+                if len(mine) >= 2 and mine["fuel_used"].notna().any():
+                    real_c = float(mine["fuel_used"].mean())
+                    tgt_c = float(cur["Conso cible (L)"])
+                    dc = (real_c - tgt_c) / tgt_c * 100 if tgt_c else 0
+                    c[4].metric("Conso 5 tours", f"{real_c:.2f} L", f"{dc:+.1f} % vs cible", delta_color="inverse")
+                    if pd.notna(actual.get("fuel_level")):
+                        laps_left_fuel = int(max(0.0, actual["fuel_level"] - rp.fuel_margin_l) // real_c)
+                        planned_left = int(cur["Tours"]) - (int(actual["lap"]) - int(plan[plan["_fin"] < elapsed]["Tours"].sum())) if pd.notna(actual.get("lap")) else None
+                        msg = f"Autonomie réelle : **{laps_left_fuel} tours** avant marge ({fmt_lap(real_c*0+float(st_.set_index('Pilote').loc[actual['driver'],'Rythme moyen'])) if actual['driver'] in st_['Pilote'].values else ''} de rythme)"
+                        if planned_left is not None:
+                            msg += f" · il reste **{planned_left} tours** prévus dans ce relais"
+                            if laps_left_fuel < planned_left:
+                                st.error(msg + f" — **manque {planned_left - laps_left_fuel} tour(s)** : lever le pied ou avancer l'arrêt.")
+                            elif laps_left_fuel - planned_left >= 2:
+                                st.success(msg + f" — {laps_left_fuel - planned_left} tour(s) de rab : possibilité de rallonger le relais.")
+                            else:
+                                st.info(msg)
+                    if dc > 3:
+                        st.warning(f"Conso {dc:+.1f} % au-dessus de la cible ({tgt_c:.2f} L) : consigne économie.")
+            if not nxt_stops.empty and len(nxt_stops) > 1:
+                n1 = nxt_stops.iloc[0]
+                st.caption(f"Prochain arrêt prévu à **{n1['Fin']}** ({n1['Pilote']} → {nxt_stops.iloc[1]['Pilote']}, "
+                           f"embarquer {nxt_stops.iloc[1]['Carburant embarqué (L)']} L)")
+            with st.expander("Plan complet"):
+                st.dataframe(plan.drop(columns=["_deb", "_fin"]), hide_index=True, use_container_width=True)

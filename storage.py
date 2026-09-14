@@ -67,6 +67,9 @@ class SqliteStore:
     def load_live(self) -> pd.DataFrame:
         return pd.DataFrame()
 
+    def load_pitstops(self) -> pd.DataFrame:
+        return pd.DataFrame()
+
     # --- league / plans (SQLite, local) -----------------------------------------------
     def _ensure_meta(self, con):
         con.execute("create table if not exists league_events (id integer primary key autoincrement, name text, race_date text, car text, track text, duration_min integer, rules text, updated_at text)")
@@ -260,6 +263,16 @@ class SupabaseStore:
     def delete_plan(self, event_key: str, car_name: str) -> None:
         requests.delete(self.base + f"plans?team_code=eq.{self.team}&event_key=eq.{event_key}&car_name=eq.{car_name}",
                         headers=self.h, timeout=30)
+
+    def load_pitstops(self) -> pd.DataFrame:
+        try:
+            rows = self._get(f"pitstops?team_code=eq.{self.team}&select=*&order=entered_at.desc&limit=2000")
+        except Exception:  # noqa: BLE001
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df["entered_at"] = pd.to_datetime(df["entered_at"], errors="coerce", utc=True)
+        return df
 
     def load_live(self) -> pd.DataFrame:
         r = requests.get(self.base + f"live?team_code=eq.{self.team}&select=*&order=updated_at.desc",

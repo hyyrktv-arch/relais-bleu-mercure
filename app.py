@@ -227,14 +227,9 @@ def page_live():
         recent = pd.DataFrame() if ui.is_demo() else store.load_recent_laps(hours=12)
         now = pd.Timestamp.now(tz="UTC")
         ctx = ui.race_ctx()
-        if ctx.get("start"):
-            start = pd.Timestamp(ctx["start"])
-            elapsed = (now - start).total_seconds()
-            total = ctx.get("duration_min", 0) * 60
-            if 0 <= elapsed <= total:
-                st.progress(min(1.0, elapsed / total), text=f"{ctx['label']} — {int(elapsed // 60)} / {ctx['duration_min']} min")
-            elif elapsed < 0:
-                st.caption(f"{ctx['label']} : départ dans {int(-elapsed // 3600)} h {int(-elapsed % 3600 // 60)} min")
+        if ctx:
+            ui.race_tracking(ctx, laps, live, recent, role)
+            st.divider()
         if live.empty:
             st.info("Aucun pilote en piste. Ils apparaissent ici dès que leur agent est lancé et qu'ils entrent en session.")
         else:
