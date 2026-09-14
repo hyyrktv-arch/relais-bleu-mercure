@@ -61,7 +61,7 @@ def page_iracing():
     # --- 2. créneau ------------------------------------------------------------------
     st.subheader("2 · Le créneau")
     slots = r["_slots"]
-    slot_labels = [d.strftime("%A %d/%m à %H:%M") for d in slots]
+    slot_labels = [SEASON.fr(d, "%A %d/%m à %H:%M") for d in slots]
     now = pd.Timestamp.now(tz="Europe/Paris").to_pydatetime()
     default_slot = next((i for i, d in enumerate(slots) if d > now), 0)
     s_idx = st.radio("Départ (heure de Paris)", range(len(slot_labels)), format_func=lambda i: slot_labels[i],
@@ -69,7 +69,7 @@ def page_iracing():
     start = slots[s_idx]
     end = start + timedelta(minutes=int(r["Durée (min)"] or 0))
     delta = start - now
-    st.markdown(f"Départ **{start.strftime('%A %d/%m %H:%M')}**, arrivée vers **{end.strftime('%H:%M')}** "
+    st.markdown(f"Départ **{SEASON.fr(start, '%A %d/%m %H:%M')}**, arrivée vers **{end.strftime('%H:%M')}** "
                 + (f"· dans {delta.days} j {delta.seconds // 3600} h" if delta.total_seconds() > 0 else "· passé"))
 
     event_key = f"iracing:{ser['series']}:{race['week']}"
@@ -175,7 +175,7 @@ def page_league():
     start = ev["race_date"].tz_convert("Europe/Paris") if pd.notna(ev.get("race_date")) else None
     if start is not None:
         delta = start.to_pydatetime() - pd.Timestamp.now(tz="Europe/Paris").to_pydatetime()
-        st.markdown(f"Départ **{start.strftime('%A %d/%m %H:%M')}**, arrivée vers **{(start + pd.Timedelta(minutes=int(ev['duration_min']))).strftime('%H:%M')}** "
+        st.markdown(f"Départ **{SEASON.fr(start, '%A %d/%m %H:%M')}**, arrivée vers **{(start + pd.Timedelta(minutes=int(ev['duration_min']))).strftime('%H:%M')}** "
                     + (f"· dans {delta.days} j {delta.seconds // 3600} h" if delta.total_seconds() > 0 else "· passée"))
     if rules.get("notes"):
         st.caption(rules["notes"])

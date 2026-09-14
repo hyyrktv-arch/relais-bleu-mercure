@@ -38,6 +38,19 @@ def race_slots_local(race_date: str, slots: list[tuple[int, int]]) -> list[datet
     return [(base + timedelta(days=d, hours=h)).astimezone(PARIS) for d, h in slots]
 
 
+JOURS = {"Mon": "lun.", "Tue": "mar.", "Wed": "mer.", "Thu": "jeu.", "Fri": "ven.", "Sat": "sam.", "Sun": "dim.",
+         "Monday": "lundi", "Tuesday": "mardi", "Wednesday": "mercredi", "Thursday": "jeudi", "Friday": "vendredi",
+         "Saturday": "samedi", "Sunday": "dimanche"}
+
+
+def fr(dt, fmt: str) -> str:
+    """strftime avec les jours en français (%A / %a)."""
+    out = dt.strftime(fmt)
+    for en, f in sorted(JOURS.items(), key=lambda kv: -len(kv[0])):
+        out = out.replace(en, f)
+    return out
+
+
 def norm(s: str | None) -> str:
     if not s:
         return ""
@@ -80,7 +93,7 @@ def upcoming(season: dict, now: datetime | None = None) -> pd.DataFrame:
             rows.append({
                 "Série": s["short"], "Voiture": s["car"], "Semaine": r["week"], "Date": r["date"],
                 "Circuit": r["track"], "Durée (min)": r.get("duration_min"),
-                "Créneaux (Paris)": ", ".join(d.strftime("%a %H:%M") for d in locs) or "?",
+                "Créneaux (Paris)": ", ".join(fr(d, "%a %H:%M") for d in locs) or "?",
                 "Prochain départ": min(future) if future else None,
                 "Météo": f"{r.get('temp_c')}°C, pluie {r.get('rain') or 0}%",
                 "Heure sim": r.get("sim_start"), "Team": s.get("team_racing", False),
