@@ -158,6 +158,11 @@ def apply_overrides(stats: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFram
     return out.sort_values("Rythme moyen").reset_index(drop=True)
 
 
+def _ceil_half(x: float) -> float:
+    import math
+    return math.ceil(x * 2) / 2
+
+
 def fmt_lap(seconds: float) -> str:
     """128.743 -> 2:08.743"""
     if seconds is None or pd.isna(seconds):
@@ -231,7 +236,20 @@ def suggest_sequence(stats: pd.DataFrame, p: RaceParams, drivers: list[str],
     if base.empty:
         return []
     if mode == "plein":
-        return [(r["Pilote"], p.tank_l) for _, r in base.iterrows()]
+        seq = [(r["Pilote"], float(p.tank_l)) for _, r in base.iterrows()]
+        if p.start_fuel_l:
+            seq[0] = (seq[0][0], float(p.start_fuel_l))
+        # dernier relais : juste le nécessaire pour finir (tours restants × conso + marge), pas un plein inutile
+        last = base.iloc[-1]
+        s_ = stats.set_index("Pilote")
+        need = int(last["Tours"]) * float(s_.loc[last["Pilote"], "Conso / tour (L)"]) + p.fuel_margin_l
+        need = min(p.tank_l, max(p.fuel_margin_l + 1, _ceil_half(need) + 1.0))  # +1 L de sécurité, arrondi au 0,5
+        seq[-1] = (seq[-1][0], need)
+        # vérifie que la séquence couvre bien la course ; sinon on garde le plein
+        _, cov = plan_from_sequence(stats, p, seq)
+        if cov.get("manque_s", 0) > 0:
+            seq[-1] = (seq[-1][0], float(p.tank_l))
+        return seq
     n = n_stints or len(base)
     total_fuel = float(base["Carburant (L)"].sum())
     first = p.start_fuel_l if p.start_fuel_l else None
