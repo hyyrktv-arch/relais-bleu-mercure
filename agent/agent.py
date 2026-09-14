@@ -22,7 +22,7 @@ from pathlib import Path
 import requests
 
 # --- Configuration par défaut (côté équipe : URL et clé PUBLISHABLE, qui peut circuler) ----
-DEFAULT_SUPABASE_URL = "https://nnflcfueaqxomxtdldjh.supabase.co"
+DEFAULT_SUPABASE_URL = "https://nnflcfueaqxomxtdldjh.supabase.co/"
 DEFAULT_PUBLISHABLE_KEY = "sb_publishable_0r44NmqRVcVR_u-MaG4oWg_U2zKVZnh"
 
 APP_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) if not getattr(sys, "frozen", False) else Path(sys.executable).parent
@@ -201,6 +201,14 @@ class Sender:
                 break
         self._persist_queue()
 
+    def send_row(self, table: str, row: dict) -> None:
+        try:
+            r = requests.post(self.base + table, headers={**self.h, "Prefer": "return=minimal"}, json=row, timeout=10)
+            if not r.ok:
+                log(f"Supabase {r.status_code} ({table}) : {r.text[:160]}")
+        except requests.RequestException:
+            pass
+
     def send_live(self, row: dict) -> None:
         try:
             requests.post(self.base + "live?on_conflict=team_code,driver",
@@ -208,6 +216,95 @@ class Sender:
                           json=row, timeout=10)
         except requests.RequestException:
             pass
+
+
+# --- mesure des arrêts aux stands ----------------------------------------------------------
+class PitTracker:
+    """Chronomètre chaque passage aux stands : pit lane, arrêt, ravitaillement, changement de pilote."""
+
+    def __init__(self, cfg: dict, sender: Sender):
+        self.cfg, self.sender = cfg, sender
+        self.reset()
+
+    def reset(self):
+        self.in_lane = False
+        self.t_enter = None
+        self.fuel_enter = None
+        self.lap_enter = None
+        self.t_stop = None          # début arrêt (vitesse nulle dans le stand)
+        self.t_go = None            # fin arrêt
+        self.stationary = 0.0
+        self.t_fuel_first = None
+        self.t_fuel_last = None
+        self.fuel_min = None
+        self.prev_fuel = None
+        self.driver_at_enter = None
+        self.phase = None
+
+    def tick(self, ir, ctx: dict) -> None:
+        on_pit = bool(_get(ir, "OnPitRoad", False))
+        t = float(_get(ir, "SessionTime", 0.0))
+        fuel = float(_get(ir, "FuelLevel", 0.0) or 0.0)
+        speed = float(_get(ir, "Speed", 0.0) or 0.0)      # m/s
+        in_stall = bool(_get(ir, "PlayerCarInPitStall", False))
+
+        if on_pit and not self.in_lane:
+            self.reset()
+            self.in_lane, self.t_enter, self.fuel_enter = True, t, fuel
+            self.fuel_min = fuel
+            self.lap_enter = int(_get(ir, "Lap", 0) or 0)
+            self.driver_at_enter = ctx["driver"]
+            self.phase = "pitlane"
+            return
+        if not self.in_lane:
+            return
+
+        # arrêt dans le stand
+        if in_stall and speed < 0.5:
+            self.phase = "stall"
+            if self.t_stop is None:
+                self.t_stop = t
+            self.t_go = t
+        elif self.t_stop is not None and self.t_go is not None and self.stationary == 0.0 and speed > 1.0:
+            self.stationary = self.t_go - self.t_stop
+            self.phase = "pitlane"
+
+        # ravitaillement : on chronomètre uniquement pendant que le niveau monte
+        if self.prev_fuel is not None and fuel > self.prev_fuel + 0.02:
+            if self.t_fuel_first is None:
+                self.t_fuel_first = t - 0.5
+            self.t_fuel_last = t
+        if self.t_fuel_first is None and self.fuel_min is not None:
+            self.fuel_min = min(self.fuel_min, fuel)
+        self.prev_fuel = fuel
+
+        if not on_pit:  # sortie de la pit lane
+            if self.stationary == 0.0 and self.t_stop is not None and self.t_go is not None:
+                self.stationary = self.t_go - self.t_stop
+            fuel_added = max(0.0, fuel - (self.fuel_min if self.fuel_min is not None else self.fuel_enter))
+            refuel_s = (self.t_fuel_last - self.t_fuel_first) if (self.t_fuel_first and self.t_fuel_last and self.t_fuel_last > self.t_fuel_first) else None
+            row = {
+                "team_code": self.cfg["team_code"], "driver": ctx["driver"], "car": ctx["car"], "track": ctx["track"],
+                "session_type": ctx["session_type"], "session_id": ctx["session_id"], "lap": self.lap_enter,
+                "entered_at": datetime.now(timezone.utc).isoformat(),
+                "pitlane_s": round(t - self.t_enter, 1),
+                "stationary_s": round(self.stationary, 1) if self.stationary else None,
+                "refuel_s": round(refuel_s, 1) if refuel_s else None,
+                "fuel_before": round(self.fuel_enter, 2), "fuel_after": round(fuel, 2),
+                "fuel_added": round(fuel_added, 2),
+                "refuel_rate": round(fuel_added / refuel_s, 2) if (refuel_s and fuel_added > 1) else None,
+                "driver_change": ctx["driver"] != self.driver_at_enter,
+                "raw": {"source": "agent"},
+            }
+            if row["pitlane_s"] > 5:  # ignore les faux passages (reset, tow)
+                self.sender.send_row("pitstops", row)
+                det = f"pit lane {row['pitlane_s']} s"
+                if row["stationary_s"]:
+                    det += f", arrêt {row['stationary_s']} s"
+                if row["fuel_added"] > 0.5:
+                    det += f", +{row['fuel_added']} L" + (f" à {row['refuel_rate']} L/s" if row["refuel_rate"] else "")
+                log(f"Arrêt aux stands : {det}")
+            self.reset()
 
 
 # --- lecture iRacing -------------------------------------------------------------------------
@@ -298,6 +395,7 @@ class LapTracker:
                 "session_type": ctx["session_type"], "session_time": ir["SessionTime"],
                 "time_remain": ir["SessionTimeRemain"], "lap": ir["Lap"], "fuel_level": ir["FuelLevel"],
                 "last_lap_time": ir["LapLastLapTime"], "on_pit_road": bool(ir["OnPitRoad"]),
+                "pit_phase": getattr(self, "pit_phase", None),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 **weather(ir),
             })
@@ -322,8 +420,16 @@ class FakeIR:
 
     def freeze_var_buffer_latest(self):
         self.t += 0.5
-        self.fuel -= 3.9 / (self.lap_len / 0.5)
-        if self.t >= (self.lap + 1) * self.lap_len:
+        # arrêt simulé : entre 3 tours et 3 tours + 90 s
+        pit_start = 3 * self.lap_len
+        self.in_pit = pit_start <= self.t < pit_start + 90
+        self.in_stall = pit_start + 25 <= self.t < pit_start + 65
+        self.speed = 0.0 if self.in_stall else 20.0
+        if self.in_stall and pit_start + 30 <= self.t < pit_start + 60:
+            self.fuel = min(100.0, self.fuel + 2.6 * 0.5)  # 2,6 L/s
+        elif not self.in_stall:
+            self.fuel -= 3.9 / (self.lap_len / 0.5)
+        if self.t >= (self.lap + 1) * self.lap_len + (90 if self.t > pit_start else 0):
             self.lap += 1
 
     def __getitem__(self, k):
@@ -335,7 +441,8 @@ class FakeIR:
             "SessionNum": 0, "LapCompleted": self.lap, "Lap": self.lap + 1,
             "LapLastLapTime": self.lap_len + 0.2 * self.lap if self.lap > 0 else -1,
             "FuelLevel": self.fuel, "SessionTime": self.t, "SessionTimeRemain": 7200 - self.t,
-            "OnPitRoad": False, "IsOnTrack": True,
+            "OnPitRoad": getattr(self, "in_pit", False), "IsOnTrack": True,
+            "PlayerCarInPitStall": getattr(self, "in_stall", False), "Speed": getattr(self, "speed", 20.0),
             "AirTemp": 21.4, "TrackTempCrew": 29.8, "Skies": 1, "TrackWetness": 1,
             "PlayerCarPosition": 3, "PlayerCarMyIncidentCount": 2,
         }.get(k)
@@ -361,7 +468,8 @@ def main() -> None:
         install_startup(quiet=True)
     sender = Sender(cfg["supabase_url"], cfg["publishable_key"])
     tracker = LapTracker(cfg, sender)
-    log(f"Agent v1.4 démarré — équipe {cfg['team_code']}")
+    pits = PitTracker(cfg, sender)
+    log(f"Agent v1.5 démarré — équipe {cfg['team_code']}")
     log(f"Envoi vers {sender.base} (clé {cfg['publishable_key'][:15]}…) — config : {CONFIG_PATH}")
     if "REMPLACER" in sender.base or "REMPLACER" in cfg["publishable_key"]:
         log("ATTENTION : URL ou clé Supabase non renseignées (valeur REMPLACER). Rien ne sera envoyé.")
@@ -384,11 +492,14 @@ def main() -> None:
             if not ir.is_connected:
                 connected = False
                 tracker.reset()
+                pits.reset()
                 log("iRacing déconnecté, en attente…")
                 time.sleep(3)
                 continue
             ir.freeze_var_buffer_latest()
             tracker.tick(ir, time.time())
+            pits.tick(ir, tracker.context(ir))
+            tracker.pit_phase = pits.phase
             sender.flush()
             time.sleep(0.5 / args.fast)
         except KeyboardInterrupt:
