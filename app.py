@@ -7,6 +7,7 @@ import streamlit as st
 
 import g61
 from storage import get_store
+import season as SEASON
 from stints import RaceParams, apply_overrides, driver_stats, plan_from_sequence, suggest_sequence
 
 st.set_page_config(page_title="Relais Bleu Mercure", page_icon="🏁", layout="wide")
@@ -32,6 +33,13 @@ is_admin = role == "admin"
 
 st.title("Relais Bleu Mercure")
 store = get_store(st.secrets)
+
+# Préparation d'une course choisie dans l'onglet Saison : appliquée avant la création des widgets
+_prep = st.session_state.pop("pending_prep", None)
+if _prep:
+    for k, v in _prep.items():
+        st.session_state[k] = v
+    st.session_state["prep_banner"] = _prep.get("_banner")
 
 # --- barre latérale : source de données ----------------------------------
 with st.sidebar:
@@ -178,13 +186,79 @@ if laps.empty:
     st.stop()
 
 # --- filtres ----------------------------------------------------------------
+if st.session_state.get("prep_banner"):
+    st.info(st.session_state["prep_banner"])
 c1, c2, c3 = st.columns(3)
-car = c1.selectbox("Voiture", sorted(laps["car"].dropna().unique()))
-track = c2.selectbox("Circuit", sorted(laps.loc[laps["car"] == car, "track"].dropna().unique()))
+_cars = sorted(laps["car"].dropna().unique())
+if st.session_state.get("sel_car") not in _cars:
+    st.session_state["sel_car"] = _cars[0] if _cars else None
+car = c1.selectbox("Voiture", _cars, key="sel_car")
+_tracks = sorted(laps.loc[laps["car"] == car, "track"].dropna().unique())
+if st.session_state.get("sel_track") not in _tracks:
+    st.session_state["sel_track"] = _tracks[0] if _tracks else None
+track = c2.selectbox("Circuit", _tracks, key="sel_track")
 sessions = c3.multiselect("Type de session", sorted(laps["session_type"].unique()), default=sorted(laps["session_type"].unique()))
 sel = laps[(laps["car"] == car) & (laps["track"] == track) & laps["session_type"].isin(sessions)]
 
-tab_live, tab_stats, tab_plan, tab_crews, tab_laps = st.tabs(["En piste", "Pilotes", "Paramètres course", "Équipages", "Tours bruts"])
+tab_live, tab_season, tab_stats, tab_plan, tab_crews, tab_laps = st.tabs(
+    ["En piste", "Saison", "Pilotes", "Paramètres course", "Équipages", "Tours bruts"])
+
+# --- onglet saison ------------------------------------------------------------------
+with tab_season:
+    from stints import fmt_lap as _fmt_lap
+    season_data = SEASON.load_season()
+    if not season_data["series"]:
+        st.info("Aucun calendrier chargé. Génère season.json avec parse_season.py à partir du PDF de saison iRacing.")
+    else:
+        st.caption(f"Saison {season_data['season']} — heures en heure de Paris. Une course sur deux semaines par série.")
+        series_names = [s_["short"] for s_ in season_data["series"]]
+        chosen = st.multiselect("Séries", series_names, default=series_names, key="season_series")
+        show_past = st.toggle("Afficher les courses passées", value=False, key="season_past")
+        cal = SEASON.upcoming(season_data)
+        cal = cal[cal["Série"].isin(chosen)]
+        if not show_past:
+            cal = cal[cal["Prochain départ"].notna()]
+        if cal.empty:
+            st.info("Plus de course à venir dans ces séries.")
+        now_paris = pd.Timestamp.now(tz="Europe/Paris")
+        for _, r in cal.iterrows():
+            race, ser = r["_race"], r["_series"]
+            ready = SEASON.readiness(laps, r["Voiture"], r["Circuit"])
+            nxt = r["Prochain départ"]
+            if nxt is not None:
+                delta = nxt - now_paris.to_pydatetime()
+                when = f"dans {delta.days} j {delta.seconds // 3600} h" if delta.days >= 0 else "passée"
+            else:
+                when = "passée"
+            with st.container(border=True):
+                h1, h2 = st.columns([3, 2])
+                h1.markdown(f"**S{r['Semaine']} · {r['Circuit']}**  \n{r['Série']} · {r['Voiture']} · {r['Durée (min)']} min"
+                            + (" · team racing" if r["Team"] else ""))
+                h2.markdown(f"**{when}**  \n{r['Date']} · {r['Météo']}" + (f" · départ sim {r['Heure sim'][-5:]}" if r["Heure sim"] else ""))
+                st.caption("Départs : " + "  ·  ".join(d.strftime("%a %d/%m %H:%M") for d in r["_slots"]))
+                m = st.columns(4)
+                m[0].metric("Tours propres en base", ready["laps"])
+                m[1].metric("Pilotes prêts", len(ready["drivers"]))
+                m[2].metric("Conso moyenne", f"{ready['conso']:.2f} L" if ready["conso"] else "—")
+                m[3].metric("Rythme moyen", _fmt_lap(ready["pace"]) if ready["pace"] else "—")
+                if ready["drivers"]:
+                    st.caption("Ont roulé ici : " + ", ".join(ready["drivers"]))
+                else:
+                    st.warning("Personne n'a encore roulé cette combinaison voiture/circuit : séance d'essais à prévoir avec l'agent lancé.")
+                fuel_lim = race.get("fuel_limits") or {}
+                if fuel_lim:
+                    st.caption("Limites carburant : " + ", ".join(f"{k} {v}%" for k, v in fuel_lim.items()))
+                b1, b2 = st.columns([1, 3])
+                if b1.button("Préparer cette course", key=f"prep_{r['Série']}_{r['Semaine']}"):
+                    prep = {"p_duration": int(r["Durée (min)"] or 120), "_banner":
+                            f"Préparation : {r['Série']} S{r['Semaine']} — {r['Circuit']} ({r['Voiture']}, {r['Durée (min)']} min)."}
+                    if ready.get("cars"):
+                        prep["sel_car"] = ready["cars"][0]
+                    if ready.get("tracks"):
+                        prep["sel_track"] = ready["tracks"][0]
+                    st.session_state["pending_prep"] = prep
+                    st.rerun()
+                b2.caption("Règle la voiture, le circuit et la durée dans les autres onglets. Réservoir et carburant imposé restent à vérifier dans Paramètres course.")
 
 # --- onglet en piste ---------------------------------------------------------------
 with tab_live:
@@ -318,8 +392,11 @@ with tab_plan:
     else:
         st.caption("Paramètres communs à toutes les voitures engagées. Le plan de chaque voiture est dans l'onglet Équipages.")
         a, b = st.columns(2)
-        duration = a.number_input("Durée de course (min)", 30, 1500, 360, step=30)
-        tank = b.number_input("Réservoir (L)", 20.0, 200.0, 100.0, step=1.0)
+        st.session_state.setdefault("p_duration", 360)
+        st.session_state.setdefault("p_tank", 100.0)
+        st.session_state.setdefault("p_start_fuel", 0.0)
+        duration = a.number_input("Durée de course (min)", 30, 1500, step=30, key="p_duration")
+        tank = b.number_input("Réservoir (L)", 20.0, 200.0, step=1.0, key="p_tank")
         pit_mode = st.radio("Temps d'arrêt", ["Durée fixe (règlement)", "Dépend du carburant ajouté"], horizontal=True,
                             help="Durée fixe : chaque arrêt coûte le même temps quel que soit le carburant (ex : 120 s imposées). "
                                  "Dépend du carburant : perte fixe + carburant ÷ débit de remplissage.")
@@ -338,7 +415,7 @@ with tab_plan:
         margin = e.number_input("Marge carburant par défaut (L)", 0.0, 10.0, 2.0, step=0.5)
         max_stint = f.number_input("Relais max par défaut (min, 0 = aucun)", 0, 300, 0, step=10,
                                    help="Limite règlementaire de temps de volant consécutif, si la course en impose une.")
-        start_fuel = g.number_input("Carburant imposé au départ (L, 0 = libre)", 0.0, 200.0, 0.0, step=1.0,
+        start_fuel = g.number_input("Carburant imposé au départ (L, 0 = libre)", 0.0, 200.0, step=1.0, key="p_start_fuel",
                                     help="Certaines endurances imposent le plein au départ. La proposition équilibrée en tient compte.")
 
         usable = tank - margin

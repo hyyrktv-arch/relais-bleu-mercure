@@ -1,0 +1,326 @@
+{
+  "season": "2026 S4",
+  "series": [
+    {
+      "series": "IMSA Sportscar Endurance Challenge",
+      "short": "IMSA Sportscar Endurance",
+      "car": "Ligier JS P320",
+      "team_racing": false,
+      "slots_gmt": "every other Saturday at 4 & 15 GMT and Sunday at 0 GMT, 20 GMT",
+      "races": [
+        {
+          "week": 1,
+          "date": "2026-09-19",
+          "track": "Silverstone Circuit - Grand Prix",
+          "duration_min": 120,
+          "sim_start": "2026-09-19 12:00",
+          "time_accel": 1,
+          "temp_c": 22,
+          "rain": 0,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": {
+            "P718": 80,
+            "M570S": 80,
+            "AMV4": 80,
+            "MGT4": 80,
+            "BMWGT4": 80,
+            "FMGT4": 80
+          },
+          "rolling_start": true
+        },
+        {
+          "week": 2,
+          "date": "2026-10-03",
+          "track": "Brands Hatch Circuit - Grand Prix",
+          "duration_min": 120,
+          "sim_start": "2026-10-03 13:30",
+          "time_accel": 1,
+          "temp_c": 20,
+          "rain": 0,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": {
+            "P718": 80,
+            "M570S": 80,
+            "AMV4": 80,
+            "MGT4": 80,
+            "BMWGT4": 80,
+            "FMGT4": 80
+          },
+          "rolling_start": true
+        },
+        {
+          "week": 3,
+          "date": "2026-10-17",
+          "track": "Summit Point Raceway - Summit Point Raceway",
+          "duration_min": 120,
+          "sim_start": "2026-10-17 16:05",
+          "time_accel": 1,
+          "temp_c": 19,
+          "rain": 32,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": {
+            "P718": 80,
+            "M570S": 80,
+            "AMV4": 80,
+            "MGT4": 80,
+            "BMWGT4": 80,
+            "FMGT4": 80
+          },
+          "rolling_start": true
+        },
+        {
+          "week": 4,
+          "date": "2026-10-31",
+          "track": "Circuit Zolder - Alternate",
+          "duration_min": 120,
+          "sim_start": "2026-10-31 12:00",
+          "time_accel": 1,
+          "temp_c": 20,
+          "rain": 0,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": {
+            "P718": 80,
+            "M570S": 80,
+            "AMV4": 80,
+            "MGT4": 80,
+            "BMWGT4": 80,
+            "FMGT4": 80
+          },
+          "rolling_start": true
+        },
+        {
+          "week": 5,
+          "date": "2026-11-14",
+          "track": "Mobility Resort Motegi - Grand Prix",
+          "duration_min": 120,
+          "sim_start": "2026-11-14 08:15",
+          "time_accel": 1,
+          "temp_c": 19,
+          "rain": 0,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": {
+            "P718": 80,
+            "M570S": 80,
+            "AMV4": 80,
+            "MGT4": 80,
+            "BMWGT4": 80,
+            "FMGT4": 80
+          },
+          "rolling_start": true
+        },
+        {
+          "week": 6,
+          "date": "2026-11-28",
+          "track": "Autódromo José Carlos Pace - Grand Prix",
+          "duration_min": 120,
+          "sim_start": "2027-02-01 12:00",
+          "time_accel": 1,
+          "temp_c": 26,
+          "rain": 33,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": {
+            "P718": 80,
+            "M570S": 80,
+            "AMV4": 80,
+            "MGT4": 80,
+            "BMWGT4": 80,
+            "FMGT4": 80
+          },
+          "rolling_start": true
+        }
+      ]
+    },
+    {
+      "series": "Global Endurance Tour",
+      "short": "Global Endurance Tour",
+      "car": "Dallara P217",
+      "team_racing": true,
+      "slots_gmt": "every other Saturday at 7, 18 GMT and Sunday at 14 GMT",
+      "races": [
+        {
+          "week": 1,
+          "date": "2026-09-26",
+          "track": "Indianapolis Motor Speedway - Road Course",
+          "duration_min": 360,
+          "sim_start": "2026-09-26 09:15",
+          "time_accel": 1,
+          "temp_c": 22,
+          "rain": 0,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 2,
+          "date": "2026-10-10",
+          "track": "Red Bull Ring - Grand Prix",
+          "duration_min": 360,
+          "sim_start": "2026-10-10 09:10",
+          "time_accel": 1,
+          "temp_c": 21,
+          "rain": 0,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 3,
+          "date": "2026-10-24",
+          "track": "Circuit Gilles Villeneuve",
+          "duration_min": 360,
+          "sim_start": "2026-10-24 13:15",
+          "time_accel": 1,
+          "temp_c": 19,
+          "rain": 0,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 4,
+          "date": "2026-11-07",
+          "track": "Autódromo Hermanos Rodríguez - Grand Prix",
+          "duration_min": 360,
+          "sim_start": "2026-11-07 12:00",
+          "time_accel": 1,
+          "temp_c": 22,
+          "rain": 28,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 5,
+          "date": "2026-11-21",
+          "track": "Silverstone Circuit - Grand Prix",
+          "duration_min": 360,
+          "sim_start": "2026-11-21 11:00",
+          "time_accel": 1,
+          "temp_c": 19,
+          "rain": 0,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 6,
+          "date": "2026-12-05",
+          "track": "Autodromo Nazionale Monza - Grand Prix",
+          "duration_min": 360,
+          "sim_start": "2027-03-01 09:10",
+          "time_accel": 1,
+          "temp_c": 19,
+          "rain": 32,
+          "min_drivers": null,
+          "max_drivers": null,
+          "fuel_limits": null,
+          "rolling_start": false
+        }
+      ]
+    },
+    {
+      "series": "IMSA Endurance Series",
+      "short": "IMSA Endurance",
+      "car": "Dallara P217",
+      "team_racing": true,
+      "slots_gmt": "every other Saturday at 2, 7, 18 GMT and Sunday at 14 GMT",
+      "races": [
+        {
+          "week": 1,
+          "date": "2026-09-19",
+          "track": "Road Atlanta - Full Course",
+          "duration_min": 160,
+          "sim_start": "2026-09-19 17:20",
+          "time_accel": 1,
+          "temp_c": 28,
+          "rain": 0,
+          "min_drivers": 1,
+          "max_drivers": 16,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 2,
+          "date": "2026-10-03",
+          "track": "Fuji International Speedway - Grand Prix",
+          "duration_min": 160,
+          "sim_start": "2026-10-03 07:25",
+          "time_accel": 1,
+          "temp_c": 20,
+          "rain": 29,
+          "min_drivers": 1,
+          "max_drivers": 16,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 3,
+          "date": "2026-10-17",
+          "track": "Long Beach Street Circuit",
+          "duration_min": 160,
+          "sim_start": "2026-10-17 08:45",
+          "time_accel": 1,
+          "temp_c": 20,
+          "rain": 0,
+          "min_drivers": 1,
+          "max_drivers": 16,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 4,
+          "date": "2026-10-31",
+          "track": "Circuit des 24 Heures du Mans - 24 Heures du Mans",
+          "duration_min": 160,
+          "sim_start": "2026-10-31 14:50",
+          "time_accel": 1,
+          "temp_c": 22,
+          "rain": 0,
+          "min_drivers": 1,
+          "max_drivers": 16,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 5,
+          "date": "2026-11-14",
+          "track": "Suzuka International Racing Course - Grand Prix",
+          "duration_min": 160,
+          "sim_start": "2026-11-14 14:20",
+          "time_accel": 1,
+          "temp_c": 19,
+          "rain": 32,
+          "min_drivers": 1,
+          "max_drivers": 16,
+          "fuel_limits": null,
+          "rolling_start": true
+        },
+        {
+          "week": 6,
+          "date": "2026-11-28",
+          "track": "Sebring International Raceway - International",
+          "duration_min": 160,
+          "sim_start": "2026-11-28 08:45",
+          "time_accel": 1,
+          "temp_c": 25,
+          "rain": 0,
+          "min_drivers": 1,
+          "max_drivers": 16,
+          "fuel_limits": null,
+          "rolling_start": true
+        }
+      ]
+    }
+  ]
+}
