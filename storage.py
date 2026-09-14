@@ -67,6 +67,58 @@ class SqliteStore:
     def load_live(self) -> pd.DataFrame:
         return pd.DataFrame()
 
+    # --- league / plans (SQLite, local) -----------------------------------------------
+    def _ensure_meta(self, con):
+        con.execute("create table if not exists league_events (id integer primary key autoincrement, name text, race_date text, car text, track text, duration_min integer, rules text, updated_at text)")
+        con.execute("create table if not exists plans (event_key text, car_name text, drivers text, sequence text, params text, locked integer, updated_by text, updated_at text, primary key (event_key, car_name))")
+
+    def list_events(self) -> pd.DataFrame:
+        with sqlite3.connect(self.path) as con:
+            self._ensure_meta(con)
+            df = pd.read_sql("select * from league_events order by race_date desc", con)
+        if not df.empty:
+            df["rules"] = df["rules"].apply(lambda v: json.loads(v) if v else {})
+            df["race_date"] = pd.to_datetime(df["race_date"], errors="coerce", utc=True)
+        return df
+
+    def save_event(self, ev: dict) -> dict:
+        with sqlite3.connect(self.path) as con:
+            self._ensure_meta(con)
+            vals = (ev.get("name"), ev.get("race_date"), ev.get("car"), ev.get("track"), ev.get("duration_min"),
+                    json.dumps(ev.get("rules") or {}), datetime.now(timezone.utc).isoformat())
+            if ev.get("id"):
+                con.execute("update league_events set name=?, race_date=?, car=?, track=?, duration_min=?, rules=?, updated_at=? where id=?", vals + (ev["id"],))
+                return {**ev}
+            cur = con.execute("insert into league_events (name, race_date, car, track, duration_min, rules, updated_at) values (?,?,?,?,?,?,?)", vals)
+            return {**ev, "id": cur.lastrowid}
+
+    def delete_event(self, event_id: int) -> None:
+        with sqlite3.connect(self.path) as con:
+            self._ensure_meta(con)
+            con.execute("delete from league_events where id=?", (event_id,))
+            con.execute("delete from plans where event_key=?", (f"league:{event_id}",))
+
+    def list_plans(self, event_key: str) -> list[dict]:
+        with sqlite3.connect(self.path) as con:
+            self._ensure_meta(con)
+            rows = con.execute("select event_key, car_name, drivers, sequence, params, locked, updated_by, updated_at from plans where event_key=? order by car_name", (event_key,)).fetchall()
+        return [{"event_key": r[0], "car_name": r[1], "drivers": json.loads(r[2] or "[]"), "sequence": json.loads(r[3] or "[]"),
+                 "params": json.loads(r[4] or "{}"), "locked": bool(r[5]), "updated_by": r[6], "updated_at": r[7]} for r in rows]
+
+    def save_plan(self, event_key: str, car_name: str, drivers: list, sequence: list, params: dict,
+                  locked: bool = False, updated_by: str | None = None) -> dict:
+        with sqlite3.connect(self.path) as con:
+            self._ensure_meta(con)
+            con.execute("insert or replace into plans values (?,?,?,?,?,?,?,?)",
+                        (event_key, car_name, json.dumps(drivers), json.dumps(sequence), json.dumps(params), int(locked),
+                         updated_by, datetime.now(timezone.utc).isoformat()))
+        return {"event_key": event_key, "car_name": car_name}
+
+    def delete_plan(self, event_key: str, car_name: str) -> None:
+        with sqlite3.connect(self.path) as con:
+            self._ensure_meta(con)
+            con.execute("delete from plans where event_key=? and car_name=?", (event_key, car_name))
+
     def load_recent_laps(self, hours: int = 12) -> pd.DataFrame:
         df = self.load_laps()
         if df.empty:
@@ -151,6 +203,63 @@ class SupabaseStore:
         r = requests.delete(self.base + f"laps?team_code=eq.{self.team}", headers=self.h, timeout=60)
         if not r.ok:
             raise RuntimeError(f"Supabase {r.status_code} : {r.text[:300]}")
+
+    # --- générique -------------------------------------------------------------------
+    def _get(self, path: str) -> list[dict]:
+        r = requests.get(self.base + path, headers=self.h, timeout=30)
+        if not r.ok:
+            raise RuntimeError(f"Supabase {r.status_code} : {r.text[:300]}")
+        return r.json()
+
+    def _upsert(self, table: str, row: dict, on_conflict: str) -> dict:
+        r = requests.post(self.base + f"{table}?on_conflict={on_conflict}",
+                          headers={**self.h, "Prefer": "resolution=merge-duplicates,return=representation"},
+                          json=row, timeout=30)
+        if not r.ok:
+            raise RuntimeError(f"Supabase {r.status_code} : {r.text[:300]}")
+        out = r.json()
+        return out[0] if isinstance(out, list) and out else {}
+
+    # --- courses league ----------------------------------------------------------------
+    def list_events(self) -> pd.DataFrame:
+        rows = self._get(f"league_events?team_code=eq.{self.team}&select=*&order=race_date.desc.nullslast")
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df["race_date"] = pd.to_datetime(df["race_date"], errors="coerce", utc=True)
+        return df
+
+    def save_event(self, ev: dict) -> dict:
+        row = {**ev, "team_code": self.team, "updated_at": datetime.now(timezone.utc).isoformat()}
+        if ev.get("id"):
+            r = requests.patch(self.base + f"league_events?id=eq.{ev['id']}",
+                               headers={**self.h, "Prefer": "return=representation"}, json=row, timeout=30)
+        else:
+            row.pop("id", None)
+            r = requests.post(self.base + "league_events", headers={**self.h, "Prefer": "return=representation"},
+                              json=row, timeout=30)
+        if not r.ok:
+            raise RuntimeError(f"Supabase {r.status_code} : {r.text[:300]}")
+        out = r.json()
+        return out[0] if out else {}
+
+    def delete_event(self, event_id: int) -> None:
+        requests.delete(self.base + f"league_events?id=eq.{event_id}", headers=self.h, timeout=30)
+        requests.delete(self.base + f"plans?event_key=eq.league:{event_id}&team_code=eq.{self.team}", headers=self.h, timeout=30)
+
+    # --- plans partagés ---------------------------------------------------------------
+    def list_plans(self, event_key: str) -> list[dict]:
+        return self._get(f"plans?team_code=eq.{self.team}&event_key=eq.{event_key}&select=*&order=car_name")
+
+    def save_plan(self, event_key: str, car_name: str, drivers: list, sequence: list, params: dict,
+                  locked: bool = False, updated_by: str | None = None) -> dict:
+        row = {"team_code": self.team, "event_key": event_key, "car_name": car_name, "drivers": drivers,
+               "sequence": sequence, "params": params, "locked": locked, "updated_by": updated_by,
+               "updated_at": datetime.now(timezone.utc).isoformat()}
+        return self._upsert("plans", row, "team_code,event_key,car_name")
+
+    def delete_plan(self, event_key: str, car_name: str) -> None:
+        requests.delete(self.base + f"plans?team_code=eq.{self.team}&event_key=eq.{event_key}&car_name=eq.{car_name}",
+                        headers=self.h, timeout=30)
 
     def load_live(self) -> pd.DataFrame:
         r = requests.get(self.base + f"live?team_code=eq.{self.team}&select=*&order=updated_at.desc",

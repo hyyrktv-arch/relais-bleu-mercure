@@ -1,286 +1,245 @@
-"""Relais Bleu Mercure — planificateur de relais iRacing alimenté par Garage 61."""
+"""Relais Bleu Mercure — planificateur de relais iRacing.
+
+Structure : deux modes de course (Week-end iRacing, Course league) + pages partagées (Pilotes, En piste, Données).
+"""
 import json
+from datetime import datetime, time, timedelta
 
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 
 import g61
-from storage import get_store
 import season as SEASON
-from stints import RaceParams, apply_overrides, driver_stats, plan_from_sequence, suggest_sequence
+import ui_common as ui
+from stints import fmt_lap
 
 st.set_page_config(page_title="Relais Bleu Mercure", page_icon="🏁", layout="wide")
-
-# --- accès équipe : stratège (tout) ou pilote (consultation) --------------------------
-pw_admin = st.secrets.get("APP_PASSWORD")
-pw_pilot = st.secrets.get("APP_PASSWORD_PILOTE")
-if (pw_admin or pw_pilot) and not st.session_state.get("role"):
-    st.title("Relais Bleu Mercure")
-    typed = st.text_input("Mot de passe", type="password")
-    if typed:
-        if pw_admin and typed == pw_admin:
-            st.session_state["role"] = "admin"
-            st.rerun()
-        elif pw_pilot and typed == pw_pilot:
-            st.session_state["role"] = "pilote"
-            st.rerun()
-        else:
-            st.error("Mot de passe incorrect")
-    st.stop()
-role = st.session_state.get("role", "admin")
+role = ui.require_auth()
 is_admin = role == "admin"
+ui.sidebar_common(role)
+laps = ui.load_laps()
 
-st.title("Relais Bleu Mercure")
-store = get_store(st.secrets)
 
-# Préparation d'une course choisie dans l'onglet Saison : appliquée avant la création des widgets
-_prep = st.session_state.pop("pending_prep", None)
-if _prep:
-    for k, v in _prep.items():
-        st.session_state[k] = v
-    st.session_state["prep_banner"] = _prep.get("_banner")
-
-# --- barre latérale : source de données ----------------------------------
-with st.sidebar:
-    st.header("Données")
-    g61_enabled = str(st.secrets.get("G61_ENABLED", "true")).lower() not in ("false", "0", "non", "no")
-    token = st.secrets.get("G61_TOKEN") if g61_enabled else None
-    team_slug = st.secrets.get("G61_TEAM_SLUG")
-    has_store_config = bool(st.secrets.get("SUPABASE_URL"))
-    if is_admin:
-        demo = st.toggle("Mode démo (données fictives)", value=not (token or has_store_config))
-    else:
-        demo = False
-        st.caption(f"Connecté en pilote · Stockage : {store.label}")
-        st.caption("Les imports et la gestion de la base sont réservés au stratège. "
-                   "Tes réglages dans Paramètres et Équipages restent locaux à ton navigateur.")
-        if st.button("Se déconnecter"):
-            st.session_state.pop("role", None)
-            st.rerun()
-
-    if is_admin and not demo and not g61_enabled:
-        st.caption(f"Stockage : {store.label}")
-        st.caption("Source : agent iRacing. Garage 61 désactivé (G61_ENABLED = false).")
-        with st.expander("Zone sensible"):
-            confirm = st.checkbox("Je confirme vouloir effacer tous les tours de l'équipe", key="confirm_clear_nog61")
-            if st.button("Vider la base", disabled=not confirm, key="clear_nog61"):
-                store.clear_laps()
-                st.success("Base vidée")
-                st.rerun()
-        if st.button("Se déconnecter", key="logout_admin_nog61"):
-            st.session_state.pop("role", None)
-            st.rerun()
-
-    if is_admin and not demo and g61_enabled:
-        st.subheader("Garage 61 (historique)")
-        if not token:
-            st.error("Ajoute G61_TOKEN dans .streamlit/secrets.toml")
-        age = st.number_input("Historique (jours)", 7, 365, 60)
-        sess = st.multiselect("Sessions", ["Practice", "Qualifying", "Race"], default=["Practice", "Race"])
-        sess_ids = [k for k, v in g61.SESSION_TYPES.items() if v in sess]
-
-        @st.cache_data(ttl=3600, show_spinner="Chargement des circuits et voitures…")
-        def catalogs(tok: str):
-            c = g61.G61Client(tok)
-            return c.tracks(), c.cars()
-
-        tracks_df, cars_df = pd.DataFrame(), pd.DataFrame()
-        if token:
-            try:
-                tracks_df, cars_df = catalogs(token)
-            except Exception as e:  # noqa: BLE001
-                st.error(f"Catalogue indisponible : {e}")
-
-        track_opts = tracks_df["name"].tolist() if ("name" in tracks_df.columns) else []
-        car_opts = cars_df["name"].tolist() if ("name" in cars_df.columns) else []
-        track_name = st.selectbox("Circuit à importer", track_opts, index=None, placeholder="Choisir un circuit")
-        car_names = st.multiselect("Voitures (vide = toutes)", car_opts)
-        track_ids = tracks_df.loc[tracks_df["name"] == track_name, "id"].tolist() if (track_name and track_opts) else []
-        car_ids = (cars_df.loc[cars_df["name"].isin(car_names), "id"].tolist() or None) if car_opts else None
-
-        if st.button("Tester la connexion", disabled=not token):
-            try:
-                r = g61.requests.get(g61.BASE_URL + "me", headers={"Authorization": f"Bearer {token}"}, timeout=15)
-                if r.ok:
-                    st.success(f"Connecté : {r.json().get('name', r.json())}")
-                else:
-                    st.error(f"HTTP {r.status_code} — {r.text[:400]}")
-            except Exception as e:  # noqa: BLE001
-                st.error(f"Erreur réseau : {e}")
-
-        st.caption(f"Stockage : {store.label}")
-        with st.expander("Zone sensible"):
-            confirm = st.checkbox("Je confirme vouloir effacer tous les tours de l'équipe")
-            if st.button("Vider la base", disabled=not confirm):
-                store.clear_laps()
-                st.success("Base vidée")
-                st.rerun()
-        if st.button("Se déconnecter", key="logout_admin"):
-            st.session_state.pop("role", None)
-            st.rerun()
-
-        resume_key = f"offset:{track_ids[0] if track_ids else ''}:{','.join(map(str, car_ids or []))}"
-        resume_from = st.session_state.get(resume_key, 0)
-        label = f"Reprendre l'import (à partir du tour {resume_from + 1})" if resume_from else "Importer les tours"
-        if st.button(label, type="primary", disabled=not (token and track_ids)):
-            with st.status("Import Garage 61…", expanded=True) as status:
-                try:
-                    df, nxt, note = g61.G61Client(token, log=st.write).laps(
-                        team_slug=team_slug, tracks=track_ids, cars=car_ids, age_days=age,
-                        session_types=sess_ids, start_offset=resume_from)
-                    n = store.save_laps(df)
-                    if nxt is None:
-                        st.session_state.pop(resume_key, None)
-                        status.update(label=f"Import terminé : {n} nouveaux tours", state="complete", expanded=False)
-                    else:
-                        st.session_state[resume_key] = nxt
-                        status.update(label=f"{n} tours enregistrés — {note}", state="running", expanded=False)
-                        st.warning("Reclique dans 2 minutes pour récupérer la suite.")
-                    if not df.empty:
-                        with st.expander("Aperçu brut du 1er tour (pour vérifier les champs)"):
-                            st.json(g61.LAST_RAW[0] if g61.LAST_RAW else {})
-                except Exception as e:  # noqa: BLE001
-                    status.update(label="Import impossible", state="error")
-                    st.error(str(e))
-
-    st.divider()
-    if is_admin:
-        st.subheader("Télémétrie iRacing (.ibt)")
-        st.caption("Fichiers dans Documents/iRacing/telemetry sur le PC du pilote. Fonctionne sans Garage 61.")
-    ibt_files = st.file_uploader("Déposer un ou plusieurs .ibt", type=["ibt"], accept_multiple_files=True,
-                                 disabled=demo, label_visibility="collapsed") if is_admin else None
-    if ibt_files and st.button("Importer la télémétrie", type="primary"):
-        import tempfile
-        from ibt_import import read_ibt
-        total_new = 0
-        for f in ibt_files:
-            try:
-                with tempfile.NamedTemporaryFile(suffix=".ibt", delete=False) as tmp:
-                    tmp.write(f.getbuffer())
-                    tmp_path = tmp.name
-                df = read_ibt(tmp_path, source_name=f.name)
-                n = store.save_laps(df)
-                total_new += n
-                if df.empty:
-                    st.warning(f"{f.name} : aucun tour complet trouvé")
-                else:
-                    st.write(f"{f.name} : {len(df)} tours ({df['driver'].iloc[0]}, {df['car'].iloc[0]}, "
-                             f"{df['track'].iloc[0]}), {n} nouveaux")
-            except Exception as e:  # noqa: BLE001
-                st.error(f"{f.name} : {e}")
-        st.success(f"{total_new} nouveaux tours enregistrés")
-
-if demo:
-    laps = g61.demo_laps()
-else:
-    try:
-        laps = store.load_laps()
-    except Exception as e:  # noqa: BLE001
-        st.error(f"Lecture de la base impossible — {e}")
-        st.info("Vérifie SUPABASE_URL (https://xxxxx.supabase.co, sans /rest/v1) et SUPABASE_SERVICE_KEY (Secret key complète).")
-        st.stop()
-
-if laps.empty:
-    st.info("Aucun tour en base. Importe depuis Garage 61 ou active le mode démo.")
-    st.stop()
-
-# --- filtres ----------------------------------------------------------------
-if st.session_state.get("prep_banner"):
-    st.info(st.session_state["prep_banner"])
-c1, c2, c3 = st.columns(3)
-_cars = sorted(laps["car"].dropna().unique())
-if st.session_state.get("sel_car") not in _cars:
-    st.session_state["sel_car"] = _cars[0] if _cars else None
-car = c1.selectbox("Voiture", _cars, key="sel_car")
-_tracks = sorted(laps.loc[laps["car"] == car, "track"].dropna().unique())
-if st.session_state.get("sel_track") not in _tracks:
-    st.session_state["sel_track"] = _tracks[0] if _tracks else None
-track = c2.selectbox("Circuit", _tracks, key="sel_track")
-sessions = c3.multiselect("Type de session", sorted(laps["session_type"].unique()), default=sorted(laps["session_type"].unique()))
-sel = laps[(laps["car"] == car) & (laps["track"] == track) & laps["session_type"].isin(sessions)]
-
-tab_live, tab_season, tab_stats, tab_plan, tab_crews, tab_laps = st.tabs(
-    ["En piste", "Saison", "Pilotes", "Paramètres course", "Équipages", "Tours bruts"])
-
-# --- onglet saison ------------------------------------------------------------------
-with tab_season:
-    from stints import fmt_lap as _fmt_lap
+# =====================================================================================
+# Page : Week-end iRacing
+# =====================================================================================
+def page_iracing():
+    st.title("Week-end iRacing")
     season_data = SEASON.load_season()
     if not season_data["series"]:
-        st.info("Aucun calendrier chargé. Génère season.json avec parse_season.py à partir du PDF de saison iRacing.")
-    else:
-        st.caption(f"Saison {season_data['season']} — heures en heure de Paris. Une course sur deux semaines par série.")
-        series_names = [s_["short"] for s_ in season_data["series"]]
-        chosen = st.multiselect("Séries", series_names, default=series_names, key="season_series")
-        show_past = st.toggle("Afficher les courses passées", value=False, key="season_past")
-        cal = SEASON.upcoming(season_data)
-        cal = cal[cal["Série"].isin(chosen)]
-        if not show_past:
-            cal = cal[cal["Prochain départ"].notna()]
-        if cal.empty:
-            st.info("Plus de course à venir dans ces séries.")
-        now_paris = pd.Timestamp.now(tz="Europe/Paris")
-        for _, r in cal.iterrows():
-            race, ser = r["_race"], r["_series"]
-            ready = SEASON.readiness(laps, r["Voiture"], r["Circuit"])
-            nxt = r["Prochain départ"]
-            if nxt is not None:
-                delta = nxt - now_paris.to_pydatetime()
-                when = f"dans {delta.days} j {delta.seconds // 3600} h" if delta.days >= 0 else "passée"
-            else:
-                when = "passée"
-            with st.container(border=True):
-                h1, h2 = st.columns([3, 2])
-                h1.markdown(f"**S{r['Semaine']} · {r['Circuit']}**  \n{r['Série']} · {r['Voiture']} · {r['Durée (min)']} min"
-                            + (" · team racing" if r["Team"] else ""))
-                h2.markdown(f"**{when}**  \n{r['Date']} · {r['Météo']}" + (f" · départ sim {r['Heure sim'][-5:]}" if r["Heure sim"] else ""))
-                st.caption("Départs : " + "  ·  ".join(d.strftime("%a %d/%m %H:%M") for d in r["_slots"]))
-                m = st.columns(4)
-                m[0].metric("Tours propres en base", ready["laps"])
-                m[1].metric("Pilotes prêts", len(ready["drivers"]))
-                m[2].metric("Conso moyenne", f"{ready['conso']:.2f} L" if ready["conso"] else "—")
-                m[3].metric("Rythme moyen", _fmt_lap(ready["pace"]) if ready["pace"] else "—")
-                if ready["drivers"]:
-                    st.caption("Ont roulé ici : " + ", ".join(ready["drivers"]))
-                else:
-                    st.warning("Personne n'a encore roulé cette combinaison voiture/circuit : séance d'essais à prévoir avec l'agent lancé.")
-                fuel_lim = race.get("fuel_limits") or {}
-                if fuel_lim:
-                    st.caption("Limites carburant : " + ", ".join(f"{k} {v}%" for k, v in fuel_lim.items()))
-                b1, b2 = st.columns([1, 3])
-                if b1.button("Préparer cette course", key=f"prep_{r['Série']}_{r['Semaine']}"):
-                    prep = {"p_duration": int(r["Durée (min)"] or 120), "_banner":
-                            f"Préparation : {r['Série']} S{r['Semaine']} — {r['Circuit']} ({r['Voiture']}, {r['Durée (min)']} min)."}
-                    if ready.get("cars"):
-                        prep["sel_car"] = ready["cars"][0]
-                    if ready.get("tracks"):
-                        prep["sel_track"] = ready["tracks"][0]
-                    st.session_state["pending_prep"] = prep
-                    st.rerun()
-                b2.caption("Règle la voiture, le circuit et la durée dans les autres onglets. Réservoir et carburant imposé restent à vérifier dans Paramètres course.")
+        st.info("Aucun calendrier chargé (season.json manquant).")
+        return
+    cal = SEASON.upcoming(season_data)
+    show_past = st.toggle("Afficher les courses passées", value=False, key="ir_past")
+    if not show_past:
+        cal = cal[cal["Prochain départ"].notna()]
+    if cal.empty:
+        st.info("Plus de course à venir cette saison.")
+        return
 
-# --- onglet en piste ---------------------------------------------------------------
-with tab_live:
-    from stints import fmt_lap
-    c_top1, c_top2 = st.columns([3, 1])
-    c_top1.caption("Pilotes dont l'agent envoie des données.")
-    auto = c_top2.toggle("Auto-rafraîchir (30 s)", value=True, key="live_auto")
+    # --- 1. choix de la course -----------------------------------------------------
+    st.subheader("1 · La course")
+    labels = [f"S{r['Semaine']} · {r['Date']} · {r['Série']} · {r['Circuit']} ({r['Voiture']}, {r['Durée (min)']} min)" for _, r in cal.iterrows()]
+    idx = st.selectbox("Course", range(len(labels)), format_func=lambda i: labels[i], key="ir_race_idx")
+    r = cal.iloc[idx]
+    race, ser = r["_race"], r["_series"]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Durée", f"{r['Durée (min)']} min")
+    c2.metric("Météo", r["Météo"])
+    c3.metric("Heure sim départ", r["Heure sim"][-5:] if r["Heure sim"] else "—")
+    c4.metric("Format", "Team racing" if r["Team"] else "Solo")
+    if race.get("fuel_limits"):
+        st.caption("Limites carburant : " + ", ".join(f"{k} {v}%" for k, v in race["fuel_limits"].items()))
+    ready = SEASON.readiness(laps, r["Voiture"], r["Circuit"])
+    m = st.columns(4)
+    m[0].metric("Tours propres en base", ready["laps"])
+    m[1].metric("Pilotes ayant roulé", len(ready["drivers"]))
+    m[2].metric("Conso moyenne", f"{ready['conso']:.2f} L" if ready["conso"] else "—")
+    m[3].metric("Rythme moyen", fmt_lap(ready["pace"]) if ready["pace"] else "—")
+
+    # --- 2. créneau ------------------------------------------------------------------
+    st.subheader("2 · Le créneau")
+    slots = r["_slots"]
+    slot_labels = [d.strftime("%A %d/%m à %H:%M") for d in slots]
+    now = pd.Timestamp.now(tz="Europe/Paris").to_pydatetime()
+    default_slot = next((i for i, d in enumerate(slots) if d > now), 0)
+    s_idx = st.radio("Départ (heure de Paris)", range(len(slot_labels)), format_func=lambda i: slot_labels[i],
+                     index=default_slot, horizontal=True, key=f"ir_slot_{idx}")
+    start = slots[s_idx]
+    end = start + timedelta(minutes=int(r["Durée (min)"] or 0))
+    delta = start - now
+    st.markdown(f"Départ **{start.strftime('%A %d/%m %H:%M')}**, arrivée vers **{end.strftime('%H:%M')}** "
+                + (f"· dans {delta.days} j {delta.seconds // 3600} h" if delta.total_seconds() > 0 else "· passé"))
+
+    event_key = f"iracing:{ser['series']}:{race['week']}"
+    ctx = {"mode": "iracing", "label": f"{r['Série']} S{r['Semaine']} {r['Circuit']}", "car": r["Voiture"],
+           "track": r["Circuit"], "duration_min": int(r["Durée (min)"] or 120), "start": start.isoformat(), "event_key": event_key}
+    ui.set_race_ctx(ctx)
+
+    # --- 3/4. réglages, pilotes, plan ------------------------------------------------
+    st.subheader("3 · Préparation")
+    ui.race_workflow(laps, ctx, key=f"ir:{event_key}", role=role, event_key=event_key)
+
+
+# =====================================================================================
+# Page : Course league
+# =====================================================================================
+def page_league():
+    st.title("Course league")
+    store = ui.store()
+    try:
+        events = store.list_events()
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Courses league indisponibles : {e}")
+        return
+
+    st.subheader("1 · La course")
+    options = ["➕ Nouvelle course"] + [f"{row['name']} · {row['car']} · {row['track']} · "
+                                        f"{row['race_date'].tz_convert('Europe/Paris').strftime('%d/%m %H:%M') if pd.notna(row['race_date']) else 'date ?'}"
+                                        for _, row in events.iterrows()]
+    if "lg_pending_choice" in st.session_state:
+        pend = st.session_state.pop("lg_pending_choice")
+        if pend is not None:
+            ids = events["id"].tolist() if not events.empty else []
+            st.session_state["lg_choice"] = (ids.index(pend) + 1) if pend in ids else 0
+    choice = st.selectbox("Course", range(len(options)), format_func=lambda i: options[i], key="lg_choice")
+    ev = None if choice == 0 else events.iloc[choice - 1].to_dict()
+
+    cars_known = sorted(laps["car"].dropna().unique().tolist()) if not laps.empty else []
+    tracks_known = sorted(laps["track"].dropna().unique().tolist()) if not laps.empty else []
+    rules = (ev or {}).get("rules") or {}
+    if isinstance(rules, str):
+        rules = json.loads(rules)
+
+    with st.form("league_form", border=True):
+        f1, f2 = st.columns([2, 1])
+        name = f1.text_input("Nom (league, manche)", value=(ev or {}).get("name", ""))
+        dur = f2.number_input("Durée (min)", 30, 1500, int((ev or {}).get("duration_min") or 180), step=15)
+        d1, d2 = st.columns(2)
+        dt_default = ev["race_date"].tz_convert("Europe/Paris") if ev is not None and pd.notna(ev.get("race_date")) else None
+        rdate = d1.date_input("Date", value=dt_default.date() if dt_default is not None else datetime.now().date())
+        rtime = d2.time_input("Heure de départ (Paris)", value=dt_default.time() if dt_default is not None else time(20, 0))
+        g1, g2 = st.columns(2)
+        car_mode = g1.radio("Voiture", ["Dans la base", "Saisie libre"], horizontal=True, index=0 if (ev or {}).get("car") in cars_known or not ev else 1)
+        car_val = (g1.selectbox("Voiture connue", cars_known, index=cars_known.index(ev["car"]) if ev and ev.get("car") in cars_known else 0)
+                   if car_mode == "Dans la base" and cars_known else g1.text_input("Voiture", value=(ev or {}).get("car", "")))
+        tr_mode = g2.radio("Circuit", ["Dans la base", "Saisie libre"], horizontal=True, index=0 if (ev or {}).get("track") in tracks_known or not ev else 1)
+        tr_val = (g2.selectbox("Circuit connu", tracks_known, index=tracks_known.index(ev["track"]) if ev and ev.get("track") in tracks_known else 0)
+                  if tr_mode == "Dans la base" and tracks_known else g2.text_input("Circuit", value=(ev or {}).get("track", "")))
+        st.markdown("**Règlement**")
+        r1, r2, r3, r4 = st.columns(4)
+        tank = r1.number_input("Réservoir (L)", 20.0, 250.0, float(rules.get("tank_l", 100.0)), step=1.0)
+        start_fuel = r2.number_input("Carburant imposé au départ (L, 0 = libre)", 0.0, 250.0, float(rules.get("start_fuel_l") or 0.0), step=1.0)
+        pit_fixed = r3.number_input("Arrêt fixe (s, 0 = dépend du carburant)", 0.0, 400.0, float(rules.get("pit_loss_s", 120.0)) if rules.get("pit_mode", "Durée fixe (règlement)").startswith("Durée") else 0.0, step=5.0)
+        max_stint = r4.number_input("Relais max (min, 0 = aucun)", 0, 300, int(rules.get("max_stint_min", 0)), step=10)
+        r5, r6, r7 = st.columns(3)
+        pit_loss_var = r5.number_input("Perte hors ravitaillement (s)", 10.0, 400.0, float(rules.get("pit_loss_s", 60.0)) if not rules.get("pit_mode", "Durée").startswith("Durée") else 60.0, step=5.0)
+        refuel = r6.number_input("Débit ravitaillement (L/s)", 0.1, 20.0, float(rules.get("refuel_rate_lps", 3.0)), step=0.1)
+        margin = r7.number_input("Marge carburant (L)", 0.0, 10.0, float(rules.get("fuel_margin_l", 2.0)), step=0.5)
+        notes = st.text_area("Notes (consignes, liens, particularités)", value=rules.get("notes", ""), height=70)
+        s1, s2 = st.columns([1, 4])
+        submitted = s1.form_submit_button("Enregistrer la course", type="primary", disabled=not is_admin)
+        if not is_admin:
+            s2.caption("Seul le stratège peut créer ou modifier une course league.")
+
+    if submitted:
+        if not name.strip():
+            st.error("Donne un nom à la course.")
+        else:
+            start_dt = pd.Timestamp(datetime.combine(rdate, rtime)).tz_localize("Europe/Paris")
+            new_rules = {"tank_l": tank, "start_fuel_l": start_fuel or None, "max_stint_min": max_stint, "fuel_margin_l": margin,
+                         "pit_mode": "Durée fixe (règlement)" if pit_fixed > 0 else "Dépend du carburant ajouté",
+                         "pit_loss_s": pit_fixed if pit_fixed > 0 else pit_loss_var, "refuel_rate_lps": refuel, "notes": notes}
+            payload = {"id": (ev or {}).get("id"), "name": name.strip(), "race_date": start_dt.tz_convert("UTC").isoformat(),
+                       "car": car_val, "track": tr_val, "duration_min": int(dur), "rules": new_rules}
+            try:
+                saved = store.save_event(payload)
+                st.session_state["lg_pending_choice"] = saved.get("id")
+                st.toast(f"Course « {saved.get('name', name)} » enregistrée.")
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Enregistrement impossible : {e}")
+
+    if ev is None:
+        st.info("Sélectionne une course existante ou enregistre-en une nouvelle pour préparer les relais.")
+        return
+
+    if is_admin:
+        with st.expander("Supprimer cette course"):
+            if st.checkbox("Je confirme la suppression de la course et de ses plans", key="lg_del_confirm") and st.button("Supprimer", key="lg_del"):
+                store.delete_event(int(ev["id"]))
+                st.session_state["lg_pending_choice"] = None
+                st.rerun()
+
+    start = ev["race_date"].tz_convert("Europe/Paris") if pd.notna(ev.get("race_date")) else None
+    if start is not None:
+        delta = start.to_pydatetime() - pd.Timestamp.now(tz="Europe/Paris").to_pydatetime()
+        st.markdown(f"Départ **{start.strftime('%A %d/%m %H:%M')}**, arrivée vers **{(start + pd.Timedelta(minutes=int(ev['duration_min']))).strftime('%H:%M')}** "
+                    + (f"· dans {delta.days} j {delta.seconds // 3600} h" if delta.total_seconds() > 0 else "· passée"))
+    if rules.get("notes"):
+        st.caption(rules["notes"])
+
+    event_key = f"league:{ev['id']}"
+    ctx = {"mode": "league", "label": ev["name"], "car": ev.get("car"), "track": ev.get("track"),
+           "duration_min": int(ev.get("duration_min") or 120), "start": start.isoformat() if start is not None else None, "event_key": event_key}
+    ui.set_race_ctx(ctx)
+    st.subheader("2 · Préparation")
+    ui.race_workflow(laps, ctx, key=f"lg:{event_key}", role=role, event_key=event_key, rules=rules)
+
+
+# =====================================================================================
+# Page : Pilotes (exploration libre)
+# =====================================================================================
+def page_pilots():
+    st.title("Pilotes")
+    if laps.empty:
+        st.info("Aucun tour en base.")
+        return
+    ctx = ui.race_ctx()
+    c1, c2, c3 = st.columns(3)
+    cars = sorted(laps["car"].dropna().unique())
+    car_m, track_m = ui.match_in_laps(laps, ctx.get("car"), ctx.get("track")) if ctx else (None, None)
+    car = c1.selectbox("Voiture", cars, index=cars.index(car_m) if car_m in cars else 0)
+    tracks = sorted(laps.loc[laps["car"] == car, "track"].dropna().unique())
+    track = c2.selectbox("Circuit", tracks, index=tracks.index(track_m) if track_m in tracks else 0)
+    sess_all = sorted(laps["session_type"].dropna().unique())
+    sessions = c3.multiselect("Type de session", sess_all, default=sess_all)
+    sel = laps[(laps["car"] == car) & (laps["track"] == track) & laps["session_type"].isin(sessions)]
+    ui.pilots_section(sel, key=f"free:{car}:{track}")
+
+
+# =====================================================================================
+# Page : En piste (live)
+# =====================================================================================
+def page_live():
+    st.title("En piste")
+    store = ui.store()
+    c1, c2 = st.columns([3, 1])
+    c1.caption("Pilotes dont l'agent envoie des données. Rafraîchissement toutes les 30 s.")
+    auto = c2.toggle("Auto-rafraîchir (30 s)", value=True, key="live_auto")
 
     @st.fragment(run_every="30s" if auto else None)
-    def render_live():
+    def render():
         if st.button("Rafraîchir maintenant", key="live_refresh"):
-            pass  # le clic relance le fragment
-        live = pd.DataFrame() if demo else store.load_live()
-        recent = pd.DataFrame() if demo else store.load_recent_laps(hours=12)
+            pass
+        live = pd.DataFrame() if ui.is_demo() else store.load_live()
+        recent = pd.DataFrame() if ui.is_demo() else store.load_recent_laps(hours=12)
         now = pd.Timestamp.now(tz="UTC")
-
+        ctx = ui.race_ctx()
+        if ctx.get("start"):
+            start = pd.Timestamp(ctx["start"])
+            elapsed = (now - start).total_seconds()
+            total = ctx.get("duration_min", 0) * 60
+            if 0 <= elapsed <= total:
+                st.progress(min(1.0, elapsed / total), text=f"{ctx['label']} — {int(elapsed // 60)} / {ctx['duration_min']} min")
+            elif elapsed < 0:
+                st.caption(f"{ctx['label']} : départ dans {int(-elapsed // 3600)} h {int(-elapsed % 3600 // 60)} min")
         if live.empty:
-            st.info("Aucun pilote en piste pour le moment. Les pilotes apparaissent ici dès que leur agent est lancé et qu'ils entrent en session.")
+            st.info("Aucun pilote en piste. Ils apparaissent ici dès que leur agent est lancé et qu'ils entrent en session.")
         else:
             live["age_s"] = (now - live["updated_at"]).dt.total_seconds()
-            live = live.sort_values("age_s")
-            for _, r in live.iterrows():
+            for _, r in live.sort_values("age_s").iterrows():
                 online = r["age_s"] < 60
                 status = "🟢 en session" if online else ("🟡 en pause" if r["age_s"] < 900 else "⚫ hors ligne")
                 since = f"il y a {int(r['age_s'])} s" if r["age_s"] < 120 else f"il y a {int(r['age_s'] // 60)} min"
@@ -291,9 +250,10 @@ with tab_live:
                     m = st.columns(6)
                     m[0].metric("Tour", int(r["lap"]) if pd.notna(r.get("lap")) else "—")
                     m[1].metric("Carburant", f"{r['fuel_level']:.1f} L" if pd.notna(r.get("fuel_level")) else "—")
-                    m[2].metric("Dernier tour", fmt_lap(r.get("last_lap_time")) if pd.notna(r.get("last_lap_time")) and r.get("last_lap_time", 0) > 0 else "—")
+                    llt = r.get("last_lap_time")
+                    m[2].metric("Dernier tour", fmt_lap(llt) if pd.notna(llt) and llt > 0 else "—")
                     tr = r.get("time_remain")
-                    m[3].metric("Temps restant", f"{int(tr // 3600):d}:{int(tr % 3600 // 60):02d}" if pd.notna(tr) and tr > 0 and tr < 1e6 else "—")
+                    m[3].metric("Temps restant", f"{int(tr // 3600):d}:{int(tr % 3600 // 60):02d}" if pd.notna(tr) and 0 < tr < 1e6 else "—")
                     m[4].metric("Position", int(r["position"]) if pd.notna(r.get("position")) else "—")
                     m[5].metric("Incidents", int(r["incidents"]) if pd.notna(r.get("incidents")) else "—")
                     meteo = []
@@ -307,7 +267,6 @@ with tab_live:
                         meteo.append("aux stands")
                     if meteo:
                         st.caption(" · ".join(meteo))
-
                     mine = recent[recent["driver"] == r["driver"]].sort_values("start_time", ascending=False).head(12) if not recent.empty else pd.DataFrame()
                     if not mine.empty:
                         show = mine[["start_time", "session_type", "lap_time", "fuel_used", "clean"]].copy()
@@ -317,209 +276,153 @@ with tab_live:
                         show["Propre"] = show["clean"].map({True: "✓", False: "✗"})
                         st.dataframe(show[["Heure", "session_type", "Temps", "Conso (L)", "Propre"]].rename(columns={"session_type": "Session"}),
                                      hide_index=True, use_container_width=True, height=min(38 * (len(show) + 1), 300))
-                        clean_laps = mine[mine["clean"]]
-                        if len(clean_laps) >= 3:
-                            st.caption(f"Sur ces {len(clean_laps)} tours propres : moyenne {fmt_lap(clean_laps['lap_time'].mean())}, "
-                                       f"conso {clean_laps['fuel_used'].mean():.2f} L/tour")
-
+                        cl = mine[mine["clean"].astype(bool)]
+                        if len(cl) >= 3:
+                            st.caption(f"Sur ces {len(cl)} tours propres : moyenne {fmt_lap(cl['lap_time'].mean())}, conso {cl['fuel_used'].mean():.2f} L/tour")
         if not recent.empty:
             st.divider()
             st.subheader("Activité des 12 dernières heures")
-            act = recent.groupby("driver").agg(Tours=("lap_id", "count"), Propres=("clean", "sum"),
-                                               Dernier=("start_time", "max"), Voiture=("car", "last"), Circuit=("track", "last")).reset_index()
+            act = recent.groupby("driver").agg(Tours=("lap_id", "count"), Propres=("clean", "sum"), Dernier=("start_time", "max"),
+                                               Voiture=("car", "last"), Circuit=("track", "last")).reset_index()
             act["Dernier"] = act["Dernier"].dt.tz_convert("Europe/Paris").dt.strftime("%d/%m %H:%M")
             act["Propres"] = act["Propres"].astype(int)
-            st.dataframe(act.rename(columns={"driver": "Pilote"}).sort_values("Dernier", ascending=False),
-                         hide_index=True, use_container_width=True)
+            st.dataframe(act.rename(columns={"driver": "Pilote"}).sort_values("Dernier", ascending=False), hide_index=True, use_container_width=True)
 
-    render_live()
+    render()
 
-# --- onglet pilotes -----------------------------------------------------------
-with tab_stats:
-    trim = st.slider("Tours lents écartés (%)", 0, 30, 10, help="Écarte les tours les plus lents (trafic, erreurs) du calcul du rythme.") / 100
-    measured = driver_stats(sel, trim)
 
-    with st.expander("Ajustements manuels (temps cible, conso, pilote sans données)", expanded=False):
-        st.caption("Laisse une case vide pour garder la valeur mesurée. Temps au format 2:11.650 ou 131.65. "
-                   "Un pilote absent des données peut être ajouté avec ses deux valeurs. Réglages locaux à ton navigateur.")
-        ov_key = f"overrides:{car}:{track}"
-        base_rows = [{"Pilote": p, "Temps cible": None, "Conso / tour (L)": None} for p in measured["Pilote"]] if not measured.empty else []
-        if ov_key not in st.session_state:
-            st.session_state[ov_key] = pd.DataFrame(base_rows, columns=["Pilote", "Temps cible", "Conso / tour (L)"])
-        else:
-            known = set(st.session_state[ov_key]["Pilote"])
-            extra = [r for r in base_rows if r["Pilote"] not in known]
-            if extra:
-                st.session_state[ov_key] = pd.concat([st.session_state[ov_key], pd.DataFrame(extra)], ignore_index=True)
-        edited_ov = st.data_editor(
-            st.session_state[ov_key], num_rows="dynamic", hide_index=True, use_container_width=True, key=f"oved_{ov_key}",
-            column_config={
-                "Pilote": st.column_config.TextColumn(required=True),
-                "Temps cible": st.column_config.TextColumn(help="ex : 2:12.000"),
-                "Conso / tour (L)": st.column_config.NumberColumn(min_value=0.0, max_value=20.0, step=0.01, format="%.2f"),
-            },
-        )
-        st.session_state[ov_key] = edited_ov
-        if st.button("Réinitialiser les ajustements", key=f"ovreset_{ov_key}"):
-            st.session_state.pop(ov_key, None)
-            st.rerun()
+# =====================================================================================
+# Page : Données (imports, tours bruts, base)
+# =====================================================================================
+def page_data():
+    st.title("Données")
+    store = ui.store()
+    g61_enabled = str(st.secrets.get("G61_ENABLED", "true")).lower() not in ("false", "0", "non", "no")
+    token = st.secrets.get("G61_TOKEN") if g61_enabled else None
+    team_slug = st.secrets.get("G61_TEAM_SLUG")
 
-    stats = apply_overrides(measured, st.session_state.get(ov_key))
-    if stats.empty:
-        st.warning("Pas assez de tours propres pour cette sélection, et aucun pilote manuel saisi.")
+    st.subheader("Sources")
+    st.markdown(f"- **Agent iRacing** : automatique, chaque tour bouclé arrive en base.  \n- **Stockage** : {store.label}."
+                + ("  \n- **Garage 61** : import manuel d'historique ci-dessous." if g61_enabled else "  \n- Garage 61 désactivé (G61_ENABLED = false)."))
+
+    if is_admin and g61_enabled and not ui.is_demo():
+        with st.expander("Import Garage 61 (historique)", expanded=False):
+            if not token:
+                st.error("Ajoute G61_TOKEN dans les Secrets.")
+            age = st.number_input("Historique (jours)", 7, 365, 60)
+            sess = st.multiselect("Sessions", ["Practice", "Qualifying", "Race"], default=["Practice", "Race"])
+            sess_ids = [k for k, v in g61.SESSION_TYPES.items() if v in sess]
+
+            @st.cache_data(ttl=3600, show_spinner="Chargement des circuits et voitures…")
+            def catalogs(tok: str):
+                c = g61.G61Client(tok)
+                return c.tracks(), c.cars()
+
+            tracks_df, cars_df = pd.DataFrame(), pd.DataFrame()
+            if token:
+                try:
+                    tracks_df, cars_df = catalogs(token)
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Catalogue indisponible : {e}")
+            track_opts = tracks_df["name"].tolist() if "name" in tracks_df.columns else []
+            car_opts = cars_df["name"].tolist() if "name" in cars_df.columns else []
+            track_name = st.selectbox("Circuit à importer", track_opts, index=None, placeholder="Choisir un circuit")
+            car_names = st.multiselect("Voitures (vide = toutes)", car_opts)
+            track_ids = tracks_df.loc[tracks_df["name"] == track_name, "id"].tolist() if (track_name and track_opts) else []
+            car_ids = (cars_df.loc[cars_df["name"].isin(car_names), "id"].tolist() or None) if car_opts else None
+            resume_key = f"offset:{track_ids[0] if track_ids else ''}:{','.join(map(str, car_ids or []))}"
+            resume_from = st.session_state.get(resume_key, 0)
+            label = f"Reprendre l'import (à partir du tour {resume_from + 1})" if resume_from else "Importer les tours"
+            if st.button(label, type="primary", disabled=not (token and track_ids)):
+                with st.status("Import Garage 61…", expanded=True) as status:
+                    try:
+                        df, nxt, note = g61.G61Client(token, log=st.write).laps(team_slug=team_slug, tracks=track_ids, cars=car_ids,
+                                                                                age_days=age, session_types=sess_ids, start_offset=resume_from)
+                        n = store.save_laps(df)
+                        ui.refresh_laps()
+                        if nxt is None:
+                            st.session_state.pop(resume_key, None)
+                            status.update(label=f"Import terminé : {n} nouveaux tours", state="complete", expanded=False)
+                        else:
+                            st.session_state[resume_key] = nxt
+                            status.update(label=f"{n} tours enregistrés — {note}", state="running", expanded=False)
+                            st.warning("Reclique dans 2 minutes pour récupérer la suite.")
+                    except Exception as e:  # noqa: BLE001
+                        status.update(label="Import impossible", state="error")
+                        st.error(str(e))
+
+    if is_admin and not ui.is_demo():
+        with st.expander("Télémétrie iRacing (.ibt) — secours"):
+            st.caption("Fichiers dans Documents/iRacing/telemetry sur le PC du pilote.")
+            ibt_files = st.file_uploader("Déposer un ou plusieurs .ibt", type=["ibt"], accept_multiple_files=True, label_visibility="collapsed")
+            if ibt_files and st.button("Importer la télémétrie", type="primary"):
+                import tempfile
+                from ibt_import import read_ibt
+                total = 0
+                for f in ibt_files:
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=".ibt", delete=False) as tmp:
+                            tmp.write(f.getbuffer())
+                            path = tmp.name
+                        df = read_ibt(path, source_name=f.name)
+                        n = store.save_laps(df)
+                        total += n
+                        st.write(f"{f.name} : {len(df)} tours, {n} nouveaux")
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"{f.name} : {e}")
+                ui.refresh_laps()
+                st.success(f"{total} nouveaux tours enregistrés")
+
+    st.subheader("Tours bruts")
+    if laps.empty:
+        st.info("Aucun tour en base.")
     else:
-        if "Source" not in stats.columns:
-            stats["Source"] = "Mesuré"
-        show = stats[["Pilote", "Source", "Temps cible", "Tours", "Meilleur", "Rythme moyen", "Écart-type",
-                      "Conso / tour (L)", "Conso max (L)", "Tours avec conso"]]
-        st.dataframe(
-            show.style.format({"Meilleur": "{:.3f}", "Rythme moyen": "{:.3f}", "Écart-type": "{:.3f}",
-                               "Conso / tour (L)": "{:.2f}", "Conso max (L)": "{:.2f}"}),
-            hide_index=True, use_container_width=True,
-        )
-        st.caption("Temps cible = rythme moyen sur tours propres après retrait des tours lents (curseur ci-dessus). "
-                   "C'est le tour que chaque pilote doit répéter pour que le plan de relais se réalise.")
-        clean = sel[sel["clean"]].dropna(subset=["lap_time"])
-        fig = px.box(clean, x="driver", y="lap_time", color="driver", points="all",
-                     labels={"driver": "", "lap_time": "Temps au tour (s)"}, title="Distribution des temps au tour")
-        fig.update_layout(showlegend=False, height=420)
-        st.plotly_chart(fig, use_container_width=True)
+        c1, c2 = st.columns(2)
+        cars = ["Toutes"] + sorted(laps["car"].dropna().unique().tolist())
+        car = c1.selectbox("Voiture", cars)
+        sub = laps if car == "Toutes" else laps[laps["car"] == car]
+        tracks = ["Tous"] + sorted(sub["track"].dropna().unique().tolist())
+        track = c2.selectbox("Circuit", tracks)
+        if track != "Tous":
+            sub = sub[sub["track"] == track]
+        cols = [c for c in sub.columns if c not in ("raw", "imported_at", "team_code")]
+        st.dataframe(sub[cols].sort_values("start_time", ascending=False).head(2000), hide_index=True, use_container_width=True)
+        st.caption(f"{len(sub)} tours · {sub['driver'].nunique()} pilotes · {sub['track'].nunique()} circuits")
+        if "raw" in sub.columns and not sub.empty:
+            with st.expander("Structure brute du 1er tour"):
+                try:
+                    st.json(json.loads(sub["raw"].iloc[0]))
+                except Exception:  # noqa: BLE001
+                    st.code(str(sub["raw"].iloc[0]))
 
-# --- onglet paramètres course --------------------------------------------------
-with tab_plan:
-    if stats.empty:
-        st.warning("Calcule d'abord les statistiques pilotes.")
-    else:
-        st.caption("Paramètres communs à toutes les voitures engagées. Le plan de chaque voiture est dans l'onglet Équipages.")
-        a, b = st.columns(2)
-        st.session_state.setdefault("p_duration", 360)
-        st.session_state.setdefault("p_tank", 100.0)
-        st.session_state.setdefault("p_start_fuel", 0.0)
-        duration = a.number_input("Durée de course (min)", 30, 1500, step=30, key="p_duration")
-        tank = b.number_input("Réservoir (L)", 20.0, 200.0, step=1.0, key="p_tank")
-        pit_mode = st.radio("Temps d'arrêt", ["Durée fixe (règlement)", "Dépend du carburant ajouté"], horizontal=True,
-                            help="Durée fixe : chaque arrêt coûte le même temps quel que soit le carburant (ex : 120 s imposées). "
-                                 "Dépend du carburant : perte fixe + carburant ÷ débit de remplissage.")
-        c, d = st.columns(2)
-        if pit_mode.startswith("Durée fixe"):
-            pit_loss = c.number_input("Temps perdu par arrêt, tout compris (s)", 10.0, 400.0, 120.0, step=5.0,
-                                      help="Entrée + sortie des stands + arrêt + changement de pilote.")
-            refuel = None
-            d.caption("Le carburant ajouté ne change pas la durée de l'arrêt.")
-        else:
-            pit_loss = c.number_input("Perte par arrêt hors ravitaillement (s)", 10.0, 400.0, 60.0, step=5.0,
-                                      help="Entrée + sortie des stands + changement de pilote, sans le temps de remplissage.")
-            refuel = d.number_input("Débit ravitaillement (L/s)", 0.1, 20.0, 3.0, step=0.1,
-                                    help="Ex : 100 L en 40 s = 2,5 L/s. Un plein prend carburant ÷ débit.")
-        e, f, g = st.columns(3)
-        margin = e.number_input("Marge carburant par défaut (L)", 0.0, 10.0, 2.0, step=0.5)
-        max_stint = f.number_input("Relais max par défaut (min, 0 = aucun)", 0, 300, 0, step=10,
-                                   help="Limite règlementaire de temps de volant consécutif, si la course en impose une.")
-        start_fuel = g.number_input("Carburant imposé au départ (L, 0 = libre)", 0.0, 200.0, step=1.0, key="p_start_fuel",
-                                    help="Certaines endurances imposent le plein au départ. La proposition équilibrée en tient compte.")
+    if is_admin and not ui.is_demo():
+        with st.expander("Zone sensible"):
+            confirm = st.checkbox("Je confirme vouloir effacer tous les tours de l'équipe")
+            if st.button("Vider la base", disabled=not confirm):
+                store.clear_laps()
+                ui.refresh_laps()
+                st.success("Base vidée")
+                st.rerun()
 
-        usable = tank - margin
-        st.markdown(f"Avec ces paramètres, un pilote consommant **{stats['Conso / tour (L)'].mean():.2f} L/tour** "
-                    f"(moyenne équipe) tient **{int(usable // stats['Conso / tour (L)'].mean())} tours** par relais, "
-                    f"soit environ **{int(usable // stats['Conso / tour (L)'].mean() * stats['Rythme moyen'].mean() / 60)} min**.")
 
-# --- onglet équipages ---------------------------------------------------------
-with tab_crews:
-    if stats.empty:
-        st.warning("Calcule d'abord les statistiques pilotes.")
-    else:
-        st.caption("Une voiture par bloc. Propose une séquence puis modifie librement chaque relais : pilote et carburant embarqué.")
-        n_crews = st.number_input("Nombre de voitures", 1, 6, 3)
-        pilots = stats["Pilote"].tolist()
-        common = dict(duration_min=duration, tank_l=tank, pit_loss_s=pit_loss, refuel_rate_lps=refuel,
-                      start_fuel_l=start_fuel or None)
-        summary, plans = [], {}
+# =====================================================================================
+# Navigation
+# =====================================================================================
+import os as _os
+_test_page = _os.environ.get("RBM_TEST_PAGE")  # tests automatisés : force une page sans navigation
+if _test_page:
+    {"iracing": page_iracing, "league": page_league, "pilotes": page_pilots, "live": page_live, "donnees": page_data}[_test_page]()
+    st.stop()
 
-        for i in range(int(n_crews)):
-            st.divider()
-            h1, h2, h3, h4 = st.columns([2, 3, 1.2, 1.2])
-            name = h1.text_input("Voiture", f"Bleu Mercure #{i + 1}", key=f"crew_name_{i}")
-            default = pilots[2 * i: 2 * i + 2] if 2 * i < len(pilots) else []
-            drivers = h2.multiselect("Pilotes de la voiture", pilots, default=default, key=f"crew_drv_{i}")
-            crew_margin = h3.number_input("Marge (L)", 0.0, 10.0, margin, step=0.5, key=f"crew_margin_{i}")
-            crew_stint = h4.number_input("Relais max (min)", 0, 300, int(max_stint), step=10, key=f"crew_stint_{i}")
-            params = RaceParams(**common, fuel_margin_l=crew_margin, max_stint_min=crew_stint or None, driver_order=drivers)
-
-            g1, g2, g3 = st.columns([1.5, 1, 1])
-            mode = g1.radio("Proposition", ["Pleins complets", "Carburant équilibré"], horizontal=True, key=f"mode_{i}")
-            n_st = g2.number_input("Nombre de relais", 1, 40, 4, key=f"nst_{i}", disabled=mode == "Pleins complets")
-            seq_key, ver_key = f"seq_{i}", f"seqver_{i}"
-            if g3.button("Proposer la séquence", key=f"gen_{i}", disabled=not drivers):
-                st.session_state[seq_key] = suggest_sequence(
-                    stats, params, drivers, "plein" if mode == "Pleins complets" else "equilibre", int(n_st))
-                st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
-
-            if seq_key not in st.session_state and drivers:
-                st.session_state[seq_key] = suggest_sequence(stats, params, drivers, "plein")
-
-            seq = st.session_state.get(seq_key, [])
-            if not drivers or not seq:
-                st.info("Choisis les pilotes de cette voiture.")
-                continue
-
-            edit_df = pd.DataFrame(seq, columns=["Pilote", "Carburant embarqué (L)"])
-            edit_df.insert(0, "Relais", range(1, len(edit_df) + 1))
-            edited = st.data_editor(
-                edit_df, hide_index=True, use_container_width=True, num_rows="dynamic",
-                key=f"editor_{i}_{st.session_state.get(ver_key, 0)}",
-                column_config={
-                    "Relais": st.column_config.NumberColumn(disabled=True),
-                    "Pilote": st.column_config.SelectboxColumn(options=drivers, required=True),
-                    "Carburant embarqué (L)": st.column_config.NumberColumn(min_value=1.0, max_value=float(tank), step=0.5, format="%.1f"),
-                },
-            )
-            new_seq = [(r["Pilote"], float(r["Carburant embarqué (L)"])) for _, r in edited.iterrows()
-                       if pd.notna(r["Pilote"]) and pd.notna(r["Carburant embarqué (L)"])]
-            plan, cov = plan_from_sequence(stats, params, new_seq)
-            if plan.empty:
-                continue
-            if start_fuel and new_seq and abs(new_seq[0][1] - start_fuel) > 0.05:
-                st.warning(f"Le règlement impose {start_fuel:.0f} L au départ, le relais 1 en prévoit {new_seq[0][1]:.1f} L.")
-            plans[name] = plan
-
-            if cov["manque_s"] > 0:
-                full = all(f >= tank - 0.05 for _, f in new_seq)
-                hint = "ajoute un relais (tous les réservoirs sont déjà pleins)." if full else "ajoute du carburant ou un relais."
-                st.error(f"La séquence s'arrête {cov['manque_s'] / 60:.1f} min avant la fin de course : {hint}")
-            elif cov["trop_s"] > 60:
-                st.info(f"Marge de {cov['trop_s'] / 60:.1f} min au-delà de la fin de course, le dernier relais sera raccourci.")
-            else:
-                st.success("La séquence couvre la course.")
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Relais", len(plan))
-            m2.metric("Arrêts", len(plan) - 1)
-            m3.metric("Tours estimés", int(cov["tours"]))
-            m4.metric("Carburant total (L)", cov["carburant_total"])
-            st.dataframe(plan, hide_index=True, use_container_width=True)
-            st.download_button("Exporter (CSV)", plan.to_csv(index=False).encode(),
-                               file_name=f"relais_{name.replace(' ', '_')}.csv", mime="text/csv", key=f"dl_{i}")
-
-            per_driver = plan.groupby("Pilote")["Durée (min)"].sum()
-            summary.append({
-                "Voiture": name, "Pilotes": " / ".join(drivers), "Relais": len(plan), "Arrêts": len(plan) - 1,
-                "Tours estimés": int(cov["tours"]), "Carburant (L)": cov["carburant_total"],
-                "Temps aux stands (s)": int(pd.to_numeric(plan["Arrêt (s)"], errors="coerce").fillna(0).sum()),
-                "Volant max/min (min)": f"{per_driver.max():.0f} / {per_driver.min():.0f}",
-            })
-
-        if summary:
-            st.divider()
-            st.subheader("Comparatif des voitures")
-            st.dataframe(pd.DataFrame(summary), hide_index=True, use_container_width=True)
-
-# --- onglet tours bruts -------------------------------------------------------
-with tab_laps:
-    cols = [c for c in sel.columns if c not in ("raw", "imported_at", "team_code")]
-    st.dataframe(sel[cols].sort_values("start_time", ascending=False), hide_index=True, use_container_width=True)
-    if "raw" in sel.columns and not sel.empty:
-        with st.expander("Structure brute renvoyée par Garage 61 (1er tour)"):
-            try:
-                st.json(json.loads(sel["raw"].iloc[0]))
-            except Exception:  # noqa: BLE001
-                st.code(sel["raw"].iloc[0])
+pg = st.navigation({
+    "Courses": [
+        st.Page(page_iracing, title="Week-end iRacing", icon="🏁", default=True, url_path="iracing"),
+        st.Page(page_league, title="Course league", icon="🏆", url_path="league"),
+    ],
+    "Équipe": [
+        st.Page(page_pilots, title="Pilotes", icon="👥", url_path="pilotes"),
+        st.Page(page_live, title="En piste", icon="📡", url_path="live"),
+        st.Page(page_data, title="Données", icon="🗄️", url_path="donnees"),
+    ],
+})
+pg.run()

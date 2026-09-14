@@ -47,13 +47,25 @@ Sans configuration, la base est un SQLite éphémère (effacé à chaque redépl
 iRacing enregistre la télémétrie dans `Documents/iRacing/telemetry` (Options > Misc, ou Alt+L en session).
 Glisser les fichiers dans la barre latérale : pilote, voiture, circuit, session, temps et carburant sont extraits.
 
+## Organisation de l'app (v2)
+
+- **Week-end iRacing** : choisir la course dans le calendrier de saison (série, semaine), le créneau de départ (heure de Paris), puis Réglages → Pilotes → Équipages et plan. Les plans sont partagés en base par course.
+- **Course league** : fiche course (nom, date/heure, voiture, circuit, durée, règlement) enregistrée en base, puis même préparation. Plans partagés, avec option « Figer » réservée au stratège.
+- **Pilotes** : exploration libre des stats par voiture/circuit, ajustements manuels (lift & coast, pilote sans données).
+- **En piste** : live plein écran, barre d'avancement de la course en préparation.
+- **Données** : imports (Garage 61, .ibt), tours bruts, base.
+
+Rôles : mot de passe stratège (tout) et mot de passe pilote (consultation + simulations locales).
+
 ## Structure
 
 ```
-app.py      interface Streamlit (3 onglets : Pilotes, Plan de relais, Tours bruts)
+app.py      point d'entrée Streamlit : navigation et pages
+ui_common.py  composants partagés : auth, contexte de course, sections Pilotes / Réglages / Équipages
+season.py, season.json, parse_season.py  calendrier de saison iRacing (extrait du PDF officiel)
 g61.py      client API Garage 61, normalisation des tours, cache SQLite, données démo
 stints.py   statistiques pilotes, moteur de relais (séquences éditables, carburant équilibré, départ imposé)
-storage.py  couche de stockage : Supabase si configuré, sinon SQLite
+storage.py  couche de stockage : Supabase si configuré, sinon SQLite (tours, courses league, plans partagés)
 ibt_import.py  lecture des fichiers de télémétrie iRacing (.ibt)
 supabase_schema.sql  tables Supabase (équipes, tours, live)
 ```
