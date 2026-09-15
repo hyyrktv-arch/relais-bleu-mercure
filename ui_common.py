@@ -14,13 +14,115 @@ from stints import RaceParams, apply_overrides, driver_stats, fmt_lap, plan_from
 from storage import get_store
 
 # ---------------------------------------------------------------------------------------
+# Identité visuelle
+# ---------------------------------------------------------------------------------------
+
+_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+html, body, [class*="css"], .stApp, .stMarkdown, .stDataFrame, button, input, textarea, select {
+  font-family: 'IBM Plex Sans', 'Segoe UI', Arial, sans-serif !important;
+  font-variant-numeric: tabular-nums;
+}
+h1 { font-weight: 600 !important; letter-spacing: -0.01em; }
+h2, h3 { font-weight: 600 !important; }
+/* chiffres façon panneau de stand */
+[data-testid="stMetricValue"] { font-size: 1.9rem !important; font-weight: 600 !important; letter-spacing: -0.01em; }
+[data-testid="stMetricLabel"] { color: #8FA3C4 !important; font-size: 0.82rem !important; }
+[data-testid="stMetricDelta"] { font-size: 0.85rem !important; }
+/* conteneurs bordés : marine, coin doux, pas d'ombre */
+[data-testid="stVerticalBlockBorderWrapper"] > div { border-color: #263553 !important; border-radius: 10px !important; background: #121D31; }
+/* onglets */
+button[data-baseweb="tab"] { font-weight: 500 !important; }
+button[data-baseweb="tab"][aria-selected="true"] { color: #D0A870 !important; }
+/* sidebar */
+section[data-testid="stSidebar"] { background: #0B1220; border-right: 1px solid #1B2740; }
+[data-testid="stSidebarHeader"] img, [data-testid="stLogo"] { height: 54px !important; max-height: 54px !important; width: auto !important; margin: 4px 0 6px 0; }
+section[data-testid="stSidebar"] [data-testid="stSidebarNav"] a { border-radius: 8px; }
+/* bandeau de course */
+.rbm-band { display:flex; align-items:center; justify-content:space-between; gap:16px;
+  padding: 10px 16px; margin: -8px 0 14px 0; border-radius: 10px;
+  background: linear-gradient(90deg, #16223A 0%, #121D31 100%); border-left: 4px solid #D0A870; }
+.rbm-band .l { color:#8FA3C4; font-size:0.78rem; }
+.rbm-band .v { color:#E8EEF8; font-size:1.05rem; font-weight:600; }
+.rbm-band .num { font-size:1.4rem; font-weight:600; color:#E8EEF8; }
+/* dataframes : entête discrète */
+[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+/* boutons primaires */
+.stButton > button[kind="primary"] { border-radius: 8px; font-weight: 600; }
+.stButton > button { border-radius: 8px; }
+/* tables de plan : moins de contraste sur les bordures */
+[data-testid="stTable"] td, [data-testid="stTable"] th { border-color: #263553 !important; }
+</style>
+"""
+
+
+def apply_branding():
+    """Logo + feuille de style. À appeler une fois par exécution, avant tout rendu."""
+    import os
+    for cand in ("assets/logo.png", "assets/logo.svg"):
+        if os.path.exists(cand):
+            try:
+                st.logo(cand, size="large")
+            except Exception:  # noqa: BLE001
+                pass
+            break
+    st.markdown(_CSS, unsafe_allow_html=True)
+
+
+def race_band(ctx: dict | None):
+    """Bandeau de la course en préparation, en tête de page."""
+    if not ctx:
+        return
+    parts = []
+    start = ctx.get("start")
+    when = ""
+    if start:
+        try:
+            s_ = pd.Timestamp(start)
+            d = s_ - pd.Timestamp.now(tz=s_.tz)
+            secs = d.total_seconds()
+            if secs > 0:
+                when = f"J-{int(secs // 86400)} · {int(secs % 86400 // 3600)} h" if secs >= 86400 else f"dans {int(secs // 3600)} h {int(secs % 3600 // 60):02d}"
+            elif secs > -ctx.get("duration_min", 0) * 60:
+                when = "en course"
+            else:
+                when = "terminée"
+            parts.append(SEASON.fr(s_.tz_convert("Europe/Paris"), "%a %d/%m %H:%M"))
+        except Exception:  # noqa: BLE001
+            pass
+    parts += [p for p in (ctx.get("car"), ctx.get("track")) if p]
+    dur = ctx.get("duration_min")
+    st.markdown(
+        f'''<div class="rbm-band">
+  <div><div class="l">Course en préparation</div><div class="v">{ctx.get("label", "")}</div>
+       <div class="l">{" · ".join(parts)}</div></div>
+  <div style="text-align:right"><div class="l">{"Durée" if dur else ""}</div><div class="num">{f"{dur} min" if dur else ""}</div>
+       <div class="l">{when}</div></div>
+</div>''', unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------------------
 # Session : auth, store, tours
 # ---------------------------------------------------------------------------------------
 
+def secret(name: str, default=None):
+    """st.secrets sans planter quand aucun fichier de secrets n'existe (exécution locale)."""
+    try:
+        return st.secrets.get(name, default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+class _Secrets(dict):
+    def get(self, k, d=None):  # compat avec get_store(secrets)
+        return secret(k, d)
+
+
 def require_auth() -> str:
     """Retourne le rôle ('admin' | 'pilote') ; arrête la page si non connecté."""
-    pw_admin = st.secrets.get("APP_PASSWORD")
-    pw_pilot = st.secrets.get("APP_PASSWORD_PILOTE")
+    pw_admin = secret("APP_PASSWORD")
+    pw_pilot = secret("APP_PASSWORD_PILOTE")
     if (pw_admin or pw_pilot) and not st.session_state.get("role"):
         st.title("Relais Bleu Mercure")
         typed = st.text_input("Mot de passe", type="password")
@@ -39,7 +141,7 @@ def require_auth() -> str:
 
 @st.cache_resource
 def _store():
-    return get_store(st.secrets)
+    return get_store(_Secrets())
 
 
 def store():
@@ -69,12 +171,9 @@ def refresh_laps():
 
 def sidebar_common(role: str):
     with st.sidebar:
-        st.markdown(f"**{'Stratège' if role == 'admin' else 'Pilote'}** · {store().label}")
+        st.caption(f"{'Stratège' if role == 'admin' else 'Pilote'} · {store().label}")
         if role == "admin":
             st.toggle("Mode démo (données fictives)", key="demo")
-        ctx = race_ctx()
-        if ctx:
-            st.caption(f"Course en préparation : {ctx.get('label', '—')}")
         if st.button("Se déconnecter", key="logout"):
             st.session_state.pop("role", None)
             st.rerun()
