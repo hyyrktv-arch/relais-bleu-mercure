@@ -1,0 +1,79 @@
+{
+  "source": "https://www.iracing.com/special-events/",
+  "updated": "2026-09-15",
+  "team_cars": ["Ligier JS P320", "Dallara P217"],
+  "events": [
+    {
+      "name": "Petit Le Mans",
+      "start_date": "2026-09-25",
+      "end_date": "2026-09-27",
+      "track": "Michelin Raceway Road Atlanta - Full Course",
+      "duration_min": 600,
+      "classes": "GTP // LMP2 // GT3 (IMSA)",
+      "cars": ["Dallara P217"],
+      "team_event": true,
+      "info_url": "https://forums.iracing.com/categories/special-events",
+      "notes": "Manche finale IMSA Michelin Endurance Cup. Créneaux publiés sur le forum iRacing (généralement plusieurs départs vendredi/samedi/dimanche)."
+    },
+    {
+      "name": "Britcar 24HR",
+      "start_date": "2026-09-18",
+      "end_date": "2026-09-20",
+      "track": "Silverstone Circuit - Grand Prix",
+      "duration_min": 1440,
+      "classes": "GT3 // GT4",
+      "cars": [],
+      "team_event": true,
+      "info_url": "https://forums.iracing.com/categories/special-events",
+      "notes": "24 h jour et nuit à Silverstone. Pas de LMP2/LMP3."
+    },
+    {
+      "name": "Bathurst 1000",
+      "start_date": "2026-10-02",
+      "end_date": "2026-10-04",
+      "track": "Mount Panorama Circuit",
+      "duration_min": 1000,
+      "classes": "Supercars",
+      "cars": [],
+      "team_event": true,
+      "info_url": "https://forums.iracing.com/categories/special-events",
+      "notes": "1000 km en Supercars (durée indicative)."
+    },
+    {
+      "name": "8 Hours of Indianapolis",
+      "start_date": "2026-10-16",
+      "end_date": "2026-10-18",
+      "track": "Indianapolis Motor Speedway - Road Course",
+      "duration_min": 480,
+      "classes": "GT3",
+      "cars": [],
+      "team_event": true,
+      "info_url": "https://forums.iracing.com/categories/special-events",
+      "notes": ""
+    },
+    {
+      "name": "992 Endurance Cup",
+      "start_date": "2026-11-27",
+      "end_date": "2026-11-29",
+      "track": "À confirmer",
+      "duration_min": 720,
+      "classes": "Porsche Cup 992.2",
+      "cars": [],
+      "team_event": true,
+      "info_url": "https://forums.iracing.com/categories/special-events",
+      "notes": "12 h monotype, créneaux standards iRacing."
+    },
+    {
+      "name": "Production Car Challenge @ViR",
+      "start_date": "2026-12-18",
+      "end_date": "2026-12-19",
+      "track": "Virginia International Raceway - Grand Course",
+      "duration_min": 240,
+      "classes": "Production Car Challenge",
+      "cars": [],
+      "team_event": true,
+      "info_url": "https://forums.iracing.com/categories/special-events",
+      "notes": "4 h, solo ou en équipe."
+    }
+  ]
+}

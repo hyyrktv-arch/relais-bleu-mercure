@@ -192,6 +192,72 @@ def page_league():
 
 
 # =====================================================================================
+# Page : Événements spéciaux
+# =====================================================================================
+def page_special():
+    st.title("Événements spéciaux")
+    ui.race_band(ui.race_ctx())
+    import os
+    if not os.path.exists("special_events.json"):
+        st.info("Aucun fichier special_events.json.")
+        return
+    data = json.load(open("special_events.json", encoding="utf-8"))
+    team_cars = data.get("team_cars", [])
+    today = pd.Timestamp.now(tz="Europe/Paris").date()
+    show_past = st.toggle("Afficher les événements passés", value=False, key="se_past")
+    events = [e for e in data["events"] if show_past or pd.Timestamp(e["end_date"]).date() >= today]
+    events.sort(key=lambda e: e["start_date"])
+    st.caption(f"Source : calendrier officiel iRacing (mis à jour le {data.get('updated', '?')}). "
+               f"Les créneaux exacts sont publiés sur le forum iRacing quelques jours avant chaque événement.")
+
+    fit = [e for e in events if any(c in team_cars for c in e.get("cars", []))]
+    others = [e for e in events if e not in fit]
+
+    st.subheader("Avec nos voitures")
+    if not fit:
+        st.info("Aucun événement à venir avec la Ligier JS P320 ou la Dallara P217.")
+    for e in fit:
+        with st.container(border=True):
+            h1, h2 = st.columns([3, 2])
+            d1, d2 = pd.Timestamp(e["start_date"]), pd.Timestamp(e["end_date"])
+            h1.markdown(f"### {e['name']}  \n{e['track']} · {e['classes']}")
+            delta = (d1.date() - today).days
+            h2.markdown(f"**{SEASON.fr(d1, '%d/%m')} → {SEASON.fr(d2, '%d/%m/%Y')}**  \n"
+                        f"{e['duration_min'] // 60} h · team racing · " + (f"J-{delta}" if delta >= 0 else "en cours / passé"))
+            st.caption(f"Nos voitures : {', '.join(c for c in e['cars'] if c in team_cars)}" + (f" · {e['notes']}" if e.get("notes") else ""))
+            for car in [c for c in e["cars"] if c in team_cars]:
+                ready = SEASON.readiness(laps, car, e["track"])
+                m = st.columns(4)
+                m[0].metric(f"Tours propres ({car.split()[0]})", ready["laps"])
+                m[1].metric("Pilotes ayant roulé", len(ready["drivers"]))
+                m[2].metric("Conso moyenne", f"{ready['conso']:.2f} L" if ready["conso"] else "—")
+                m[3].metric("Rythme moyen", fmt_lap(ready["pace"]) if ready["pace"] else "—")
+            st.link_button("Infos et créneaux (forum iRacing)", e.get("info_url", "https://forums.iracing.com/categories/special-events"))
+            st.markdown("**Préparer**")
+            c1, c2, c3 = st.columns([1.2, 1, 1])
+            car_sel = c1.selectbox("Voiture", [c for c in e["cars"] if c in team_cars], key=f"se_car_{e['name']}")
+            d_sel = c2.date_input("Jour du départ", value=d1.date() if delta >= 0 else today, min_value=d1.date(), max_value=d2.date(), key=f"se_date_{e['name']}")
+            t_sel = c3.time_input("Heure de départ (Paris)", value=time(20, 0), key=f"se_time_{e['name']}")
+            start = pd.Timestamp(datetime.combine(d_sel, t_sel)).tz_localize("Europe/Paris")
+            event_key = f"special:{e['name']}:{e['start_date']}"
+            ctx = {"mode": "special", "label": f"{e['name']} ({car_sel})", "car": car_sel, "track": e["track"],
+                   "duration_min": int(e["duration_min"]), "start": start.isoformat(), "event_key": event_key}
+            if st.button("Préparer cet événement", key=f"se_prep_{e['name']}", type="primary"):
+                ui.set_race_ctx(ctx)
+                st.rerun()
+            if ui.race_ctx().get("event_key") == event_key:
+                st.divider()
+                ui.race_workflow(laps, ui.race_ctx(), key=f"se:{event_key}", role=role, event_key=event_key)
+
+    if others:
+        st.subheader("Autres événements team racing")
+        rows = [{"Événement": e["name"], "Dates": f"{SEASON.fr(pd.Timestamp(e['start_date']), '%d/%m')} → {SEASON.fr(pd.Timestamp(e['end_date']), '%d/%m')}",
+                 "Circuit": e["track"], "Durée": f"{e['duration_min'] // 60} h", "Voitures": e["classes"]} for e in others]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.caption("Pas de LMP2/LMP3 engagées : affichés pour information (un pilote peut y participer en GT3 par exemple).")
+
+
+# =====================================================================================
 # Page : Pilotes (exploration libre)
 # =====================================================================================
 def page_pilots():
@@ -412,13 +478,14 @@ def page_data():
 import os as _os
 _test_page = _os.environ.get("RBM_TEST_PAGE")  # tests automatisés : force une page sans navigation
 if _test_page:
-    {"iracing": page_iracing, "league": page_league, "pilotes": page_pilots, "live": page_live, "donnees": page_data}[_test_page]()
+    {"iracing": page_iracing, "league": page_league, "special": page_special, "pilotes": page_pilots, "live": page_live, "donnees": page_data}[_test_page]()
     st.stop()
 
 pg = st.navigation({
     "Courses": [
         st.Page(page_iracing, title="Week-end iRacing", icon="🏁", default=True, url_path="iracing"),
         st.Page(page_league, title="Course league", icon="🏆", url_path="league"),
+        st.Page(page_special, title="Événements spéciaux", icon="⭐", url_path="special"),
     ],
     "Équipe": [
         st.Page(page_pilots, title="Pilotes", icon="👥", url_path="pilotes"),
