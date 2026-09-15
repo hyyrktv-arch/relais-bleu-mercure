@@ -372,7 +372,8 @@ def params_section(key: str, defaults: dict, stats: pd.DataFrame | None = None, 
         # Calculateur lift & coast : conso nécessaire pour finir en N arrêts
         with st.expander("Calculateur : combien économiser pour supprimer un arrêt ?"):
             n_stops_now = max(0, -(-est_laps // laps_per_stint) - 1)
-            target_stops = st.number_input("Arrêts visés", 0, 20, max(0, n_stops_now - 1), key=k("target_stops"))
+            target_stops = st.number_input("Arrêts visés", 0, max(60, n_stops_now + 5), min(max(0, n_stops_now - 1), max(60, n_stops_now + 5)),
+                                           key=k("target_stops"))
             stints = target_stops + 1
             laps_per = -(-est_laps // stints)
             first_cap = start_fuel if start_fuel else tank
