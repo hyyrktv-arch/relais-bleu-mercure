@@ -13,7 +13,8 @@ import season as SEASON
 import ui_common as ui
 from stints import fmt_lap
 
-st.set_page_config(page_title="Relais Bleu Mercure", page_icon="🏁", layout="wide")
+st.set_page_config(page_title="Relais Bleu Mercure", page_icon="assets/logo.svg" if __import__("os").path.exists("assets/logo.svg") else "🏁", layout="wide")
+ui.apply_branding()
 role = ui.require_auth()
 is_admin = role == "admin"
 ui.sidebar_common(role)
@@ -25,6 +26,7 @@ laps = ui.load_laps()
 # =====================================================================================
 def page_iracing():
     st.title("Week-end iRacing")
+    ui.race_band(ui.race_ctx())
     season_data = SEASON.load_season()
     if not season_data["series"]:
         st.info("Aucun calendrier chargé (season.json manquant).")
@@ -87,6 +89,7 @@ def page_iracing():
 # =====================================================================================
 def page_league():
     st.title("Course league")
+    ui.race_band(ui.race_ctx())
     store = ui.store()
     try:
         events = store.list_events()
@@ -193,6 +196,7 @@ def page_league():
 # =====================================================================================
 def page_pilots():
     st.title("Pilotes")
+    ui.race_band(ui.race_ctx())
     if laps.empty:
         st.info("Aucun tour en base.")
         return
@@ -214,6 +218,7 @@ def page_pilots():
 # =====================================================================================
 def page_live():
     st.title("En piste")
+    ui.race_band(ui.race_ctx())
     store = ui.store()
     c1, c2 = st.columns([3, 1])
     c1.caption("Pilotes dont l'agent envoie des données. Rafraîchissement toutes les 30 s.")
@@ -291,10 +296,11 @@ def page_live():
 # =====================================================================================
 def page_data():
     st.title("Données")
+    ui.race_band(ui.race_ctx())
     store = ui.store()
-    g61_enabled = str(st.secrets.get("G61_ENABLED", "true")).lower() not in ("false", "0", "non", "no")
-    token = st.secrets.get("G61_TOKEN") if g61_enabled else None
-    team_slug = st.secrets.get("G61_TEAM_SLUG")
+    g61_enabled = str(ui.secret("G61_ENABLED", "true")).lower() not in ("false", "0", "non", "no")
+    token = ui.secret("G61_TOKEN") if g61_enabled else None
+    team_slug = ui.secret("G61_TEAM_SLUG")
 
     st.subheader("Sources")
     st.markdown(f"- **Agent iRacing** : automatique, chaque tour bouclé arrive en base.  \n- **Stockage** : {store.label}."
