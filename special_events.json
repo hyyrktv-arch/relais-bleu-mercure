@@ -1,7 +1,10 @@
 {
   "source": "https://www.iracing.com/special-events/",
   "updated": "2026-09-15",
-  "team_cars": ["Ligier JS P320", "Dallara P217"],
+  "team_cars": [
+    "Ligier JS P320",
+    "Dallara P217"
+  ],
   "events": [
     {
       "name": "Petit Le Mans",
@@ -10,7 +13,9 @@
       "track": "Michelin Raceway Road Atlanta - Full Course",
       "duration_min": 600,
       "classes": "GTP // LMP2 // GT3 (IMSA)",
-      "cars": ["Dallara P217"],
+      "cars": [
+        "Dallara P217"
+      ],
       "team_event": true,
       "info_url": "https://forums.iracing.com/categories/special-events",
       "notes": "Manche finale IMSA Michelin Endurance Cup. Créneaux publiés sur le forum iRacing (généralement plusieurs départs vendredi/samedi/dimanche)."
@@ -32,12 +37,12 @@
       "start_date": "2026-10-02",
       "end_date": "2026-10-04",
       "track": "Mount Panorama Circuit",
-      "duration_min": 1000,
+      "duration_min": 390,
       "classes": "Supercars",
       "cars": [],
       "team_event": true,
       "info_url": "https://forums.iracing.com/categories/special-events",
-      "notes": "1000 km en Supercars (durée indicative)."
+      "notes": "1000 km en Supercars (~6 h 30)."
     },
     {
       "name": "8 Hours of Indianapolis",

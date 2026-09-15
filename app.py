@@ -212,49 +212,63 @@ def page_special():
 
     fit = [e for e in events if any(c in team_cars for c in e.get("cars", []))]
     others = [e for e in events if e not in fit]
+    cars_known = sorted(laps["car"].dropna().unique().tolist()) if not laps.empty else []
 
-    st.subheader("Avec nos voitures")
-    if not fit:
-        st.info("Aucun événement à venir avec la Ligier JS P320 ou la Dallara P217.")
-    for e in fit:
+    def render_event(e: dict, highlight: bool):
+        d1, d2 = pd.Timestamp(e["start_date"]), pd.Timestamp(e["end_date"])
+        delta = (d1.date() - today).days
         with st.container(border=True):
             h1, h2 = st.columns([3, 2])
-            d1, d2 = pd.Timestamp(e["start_date"]), pd.Timestamp(e["end_date"])
             h1.markdown(f"### {e['name']}  \n{e['track']} · {e['classes']}")
-            delta = (d1.date() - today).days
             h2.markdown(f"**{SEASON.fr(d1, '%d/%m')} → {SEASON.fr(d2, '%d/%m/%Y')}**  \n"
-                        f"{e['duration_min'] // 60} h · team racing · " + (f"J-{delta}" if delta >= 0 else "en cours / passé"))
-            st.caption(f"Nos voitures : {', '.join(c for c in e['cars'] if c in team_cars)}" + (f" · {e['notes']}" if e.get("notes") else ""))
-            for car in [c for c in e["cars"] if c in team_cars]:
-                ready = SEASON.readiness(laps, car, e["track"])
+                        f"{e['duration_min'] // 60} h {e['duration_min'] % 60:02d} · team racing · " + (f"J-{delta}" if delta >= 0 else "en cours / passé"))
+            our = [c for c in e.get("cars", []) if c in team_cars]
+            cap = (f"Nos voitures : {', '.join(our)}" if our else "Aucune de nos voitures habituelles : à courir avec une autre (GT3, GT4…)")
+            if e.get("notes"):
+                cap += f" · {e['notes']}"
+            st.caption(cap)
+            st.link_button("Infos et créneaux (forum iRacing)", e.get("info_url", "https://forums.iracing.com/categories/special-events"))
+
+            st.markdown("**Préparer**")
+            c0, c1, c2, c3 = st.columns([1, 1.4, 1, 1])
+            car_mode = c0.radio("Voiture", ["Dans la base", "Saisie libre"], key=f"se_cm_{e['name']}", horizontal=False,
+                                index=0 if (our and any(SEASON.norm(c) in [SEASON.norm(k) for k in cars_known] for c in our)) or cars_known else 1)
+            if car_mode == "Dans la base" and cars_known:
+                default_car = next((k for k in cars_known if any(SEASON.norm(k) == SEASON.norm(c) for c in our)), cars_known[0])
+                car_sel = c1.selectbox("Voiture connue", cars_known, index=cars_known.index(default_car), key=f"se_car_{e['name']}")
+            else:
+                car_sel = c1.text_input("Voiture", value=our[0] if our else (cars_known[0] if cars_known else ""),
+                                        key=f"se_cartxt_{e['name']}", placeholder="ex : Porsche 992 GT3 R")
+            d_sel = c2.date_input("Jour du départ", value=d1.date() if delta >= 0 else today, min_value=min(d1.date(), today),
+                                  max_value=d2.date(), key=f"se_date_{e['name']}")
+            t_sel = c3.time_input("Heure de départ (Paris)", value=time(20, 0), key=f"se_time_{e['name']}")
+            if car_sel:
+                ready = SEASON.readiness(laps, car_sel, e["track"])
                 m = st.columns(4)
-                m[0].metric(f"Tours propres ({car.split()[0]})", ready["laps"])
+                m[0].metric("Tours propres en base", ready["laps"])
                 m[1].metric("Pilotes ayant roulé", len(ready["drivers"]))
                 m[2].metric("Conso moyenne", f"{ready['conso']:.2f} L" if ready["conso"] else "—")
                 m[3].metric("Rythme moyen", fmt_lap(ready["pace"]) if ready["pace"] else "—")
-            st.link_button("Infos et créneaux (forum iRacing)", e.get("info_url", "https://forums.iracing.com/categories/special-events"))
-            st.markdown("**Préparer**")
-            c1, c2, c3 = st.columns([1.2, 1, 1])
-            car_sel = c1.selectbox("Voiture", [c for c in e["cars"] if c in team_cars], key=f"se_car_{e['name']}")
-            d_sel = c2.date_input("Jour du départ", value=d1.date() if delta >= 0 else today, min_value=d1.date(), max_value=d2.date(), key=f"se_date_{e['name']}")
-            t_sel = c3.time_input("Heure de départ (Paris)", value=time(20, 0), key=f"se_time_{e['name']}")
             start = pd.Timestamp(datetime.combine(d_sel, t_sel)).tz_localize("Europe/Paris")
             event_key = f"special:{e['name']}:{e['start_date']}"
-            ctx = {"mode": "special", "label": f"{e['name']} ({car_sel})", "car": car_sel, "track": e["track"],
+            ctx = {"mode": "special", "label": f"{e['name']} ({car_sel or '?'})", "car": car_sel, "track": e["track"],
                    "duration_min": int(e["duration_min"]), "start": start.isoformat(), "event_key": event_key}
-            if st.button("Préparer cet événement", key=f"se_prep_{e['name']}", type="primary"):
+            if st.button("Préparer cet événement", key=f"se_prep_{e['name']}", type="primary", disabled=not car_sel):
                 ui.set_race_ctx(ctx)
                 st.rerun()
             if ui.race_ctx().get("event_key") == event_key:
                 st.divider()
                 ui.race_workflow(laps, ui.race_ctx(), key=f"se:{event_key}", role=role, event_key=event_key)
 
+    st.subheader("Avec nos voitures habituelles")
+    if not fit:
+        st.info("Aucun événement à venir avec la Ligier JS P320 ou la Dallara P217.")
+    for e in fit:
+        render_event(e, True)
     if others:
         st.subheader("Autres événements team racing")
-        rows = [{"Événement": e["name"], "Dates": f"{SEASON.fr(pd.Timestamp(e['start_date']), '%d/%m')} → {SEASON.fr(pd.Timestamp(e['end_date']), '%d/%m')}",
-                 "Circuit": e["track"], "Durée": f"{e['duration_min'] // 60} h", "Voitures": e["classes"]} for e in others]
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-        st.caption("Pas de LMP2/LMP3 engagées : affichés pour information (un pilote peut y participer en GT3 par exemple).")
+        for e in others:
+            render_event(e, False)
 
 
 # =====================================================================================
